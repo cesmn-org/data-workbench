@@ -46,7 +46,7 @@ jobs:
             process.stdin.on("end", () => {
               const projects = JSON.parse(input);
               const name = process.env.PAGES_PROJECT_NAME;
-              process.exit(projects.some(project => project.name === name) ? 0 : 1);
+              process.exit(projects.some(project => project['Project Name'] === name) ? 0 : 1);
             });
           '; then
             echo "Pages project $PAGES_PROJECT_NAME already exists."
