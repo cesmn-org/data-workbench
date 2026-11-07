@@ -1,0 +1,13 @@
+{
+  "name": "accdb-browser",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "List Microsoft Access tables and columns using mdb-reader.",
+  "scripts": {
+    "start": "node src/cli.mjs"
+  },
+  "dependencies": {
+    "mdb-reader": "^3.2.0"
+  }
+}
