@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import './App.css'
 import config from './config/access-import.json'
-import { processAccessFile, type ProcessingReport } from './access-processing'
+import { type ProcessingReport } from './access-processing'
 
 type Area = 'operations' | 'datasets' | 'query' | 'reports' | 'exports'
 
@@ -23,16 +23,22 @@ function App() {
   const tableCount = Object.keys(config.tables).length
   const columnCount = useMemo(() => Object.values(config.tables).reduce((total, table) => total + table.retainColumns.length, 0), [])
 
-  async function processFile() {
+function processFile() {
     if (!file) return
-    setProcessing(true); setReport(undefined); setNotice('')
-    try {
-      const result = await processAccessFile(file, setProgress)
-      setReport(result)
-      setNotice(result.missingTables.length || Object.keys(result.missingColumns).length ? 'Processing completed with configuration mismatches.' : 'Processing completed. The raw Access file stayed in this browser.')
-    } catch (error) {
-      setNotice(`Processing failed: ${error instanceof Error ? error.message : String(error)}`)
-    } finally { setProcessing(false) }
+    setProcessing(true); setReport(undefined); setNotice(''); setProgress('Starting background processing…')
+    const worker = new Worker(new URL('./access-processing.worker.ts', import.meta.url), { type: 'module' })
+    worker.onmessage = event => {
+      const message = event.data as { type: string; message?: string; report?: ProcessingReport }
+      if (message.type === 'progress') setProgress(message.message ?? '')
+      if (message.type === 'complete' && message.report) {
+        setReport(message.report)
+        setNotice(message.report.missingTables.length || Object.keys(message.report.missingColumns).length ? 'Processing completed with configuration mismatches.' : 'Processing completed. The raw Access file stayed in this browser.')
+        setProcessing(false); worker.terminate()
+      }
+      if (message.type === 'error') { setNotice(`Processing failed: ${message.message}`); setProcessing(false); worker.terminate() }
+    }
+    worker.onerror = event => { setNotice(`Processing failed: ${event.message}`); setProcessing(false); worker.terminate() }
+    worker.postMessage({ file })
   }
 
   return (
