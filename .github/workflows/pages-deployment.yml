@@ -17,9 +17,6 @@ jobs:
   deploy:
     name: Build and deploy
     runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: https://data-workbench.pages.dev
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
