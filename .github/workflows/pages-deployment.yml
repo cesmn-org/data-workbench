@@ -17,6 +17,9 @@ jobs:
   deploy:
     name: Build and deploy
     runs-on: ubuntu-latest
+    env:
+      PAGES_PROJECT_NAME: ${{ vars.CLOUDFLARE_PAGES_PROJECT_NAME }}
+      PAGES_PRODUCTION_BRANCH: ${{ vars.CLOUDFLARE_PAGES_PRODUCTION_BRANCH }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -37,8 +40,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PAGES_PROJECT_NAME: data-workbench
         run: |
+          set -euo pipefail
           projects="$(npx wrangler pages project list --json)"
           if printf '%s' "$projects" | node -e '
             let input = "";
@@ -52,7 +55,7 @@ jobs:
             echo "Pages project $PAGES_PROJECT_NAME already exists."
           else
             echo "Creating Pages project $PAGES_PROJECT_NAME."
-            npx wrangler pages project create "$PAGES_PROJECT_NAME" --production-branch=main
+            npx wrangler pages project create "$PAGES_PROJECT_NAME" --production-branch="$PAGES_PRODUCTION_BRANCH"
           fi
 
       - name: Deploy to Cloudflare Pages
@@ -60,5 +63,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=data-workbench --commit-dirty=true
+          command: pages deploy dist --project-name=${{ env.PAGES_PROJECT_NAME }} --commit-dirty=true
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
