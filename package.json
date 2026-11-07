@@ -11,8 +11,15 @@
     "deploy": "npm run build && wrangler pages deploy dist --project-name=data-workbench"
   },
   "dependencies": {
+    "@duckdb/duckdb-wasm": "^1.33.1-dev57.0",
+    "buffer": "^6.0.3",
+    "events": "^3.3.0",
+    "mdb-reader": "^3.2.0",
+    "process": "^0.11.10",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "stream-browserify": "^3.0.0",
+    "util": "^0.12.5"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
