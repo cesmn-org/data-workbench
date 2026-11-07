@@ -33,6 +33,28 @@ jobs:
       - name: Build application
         run: npm run build
 
+      - name: Ensure Cloudflare Pages project exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT_NAME: data-workbench
+        run: |
+          projects="$(npx wrangler pages project list --json)"
+          if printf '%s' "$projects" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const projects = JSON.parse(input);
+              const name = process.env.PAGES_PROJECT_NAME;
+              process.exit(projects.some(project => project.name === name) ? 0 : 1);
+            });
+          '; then
+            echo "Pages project $PAGES_PROJECT_NAME already exists."
+          else
+            echo "Creating Pages project $PAGES_PROJECT_NAME."
+            npx wrangler pages project create "$PAGES_PROJECT_NAME" --production-branch=main
+          fi
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v4
         with:
