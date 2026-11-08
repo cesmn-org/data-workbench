@@ -48,7 +48,7 @@ function processFile() {
     setUploading(true); setNotice(''); setUploaded(undefined)
     try {
       const form = new FormData()
-      form.set('sourceFileName', file.name)
+      form.set('sourceFileName', 'ACCESS')
       for (const table of report.tables) form.append('file', new File([table.parquetBytes.buffer.slice(table.parquetBytes.byteOffset, table.parquetBytes.byteOffset + table.parquetBytes.byteLength) as ArrayBuffer], `${table.name}.parquet`, { type: 'application/vnd.apache.parquet' }))
       const response = await fetch('/api/uploads', { method: 'POST', body: form })
       const body = await response.json() as { error?: string; timestamp?: string; objects?: { table: string; key: string; size: number }[] }

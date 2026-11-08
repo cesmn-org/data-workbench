@@ -21,7 +21,7 @@ function objectKeyFromRequest(url: URL): string | null {
 
 function isAllowedObjectKey(key: string): boolean {
   const name = key.split("/").pop() ?? "";
-  return /^\d{4}-\d{2}-\d{2}-\d{6}-[a-z0-9-]+-(tblVisits|tblClientService|tblClientInformation)\.parquet$/.test(name);
+  return /^\d{4}-\d{2}-\d{2}-\d{6}-ACCESS-(tblVisits|tblClientService|tblClientInformation)\.parquet$/.test(name);
 }
 
 function objectHeaders(object: R2Object, size: number): Headers {
@@ -70,12 +70,6 @@ async function serveObject(request: Request, bucket: R2Bucket, key: string): Pro
   return new Response(request.method === "HEAD" ? null : object.body, { status: range ? 206 : 200, headers });
 }
 
-function sourceSlug(sourceFileName: string): string | null {
-  const base = sourceFileName.split(/[\\/]/).pop()?.replace(/\.(accdb|mdb)$/i, "") ?? "";
-  const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return slug || null;
-}
-
 function utcTimestamp(date: Date): string {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "").replace("T", "-");
 }
@@ -94,9 +88,8 @@ async function uploadBatch(request: Request, bucket: R2Bucket): Promise<Response
   }
   const form = await request.formData();
   const source = form.get("sourceFileName");
-  if (typeof source !== "string") return Response.json({ error: "sourceFileName is required" }, { status: 400 });
-  const sourceName = sourceSlug(source);
-  if (!sourceName) return Response.json({ error: "Invalid source filename" }, { status: 400 });
+  if (typeof source !== "string" || !source) return Response.json({ error: "sourceFileName is required" }, { status: 400 });
+  const sourceName = "ACCESS";
   const files = [...form.entries()]
     .filter(([name, value]) => name === "file" && value instanceof File)
     .map(([, value]) => value as File);
