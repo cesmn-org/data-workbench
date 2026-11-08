@@ -12,7 +12,7 @@ interface Env {
 const OBJECT_PREFIX = "/api/objects/";
 const UPLOAD_PATH = "/api/uploads";
 const PLANS_PATH = "/api/plans";
-const TABLES = new Set(["tblVisits", "tblClientService", "tblClientInformation"]);
+const UPLOAD_TABLES = new Set(["tblVisits", "tblClientService", "tblClientInformation"]);
 const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
 
 function jsonError(message: string, status = 400): Response {
@@ -78,7 +78,7 @@ async function uploadBatch(request: Request, bucket: R2Bucket): Promise<Response
   const uploaded: { table: string; key: string; size: number }[] = [];
   for (const file of files) {
     const table = file.name.replace(/\.parquet$/i, "");
-    if (!TABLES.has(table) || !file.name.toLowerCase().endsWith(".parquet")) return jsonError(`Invalid table file: ${file.name}`);
+    if (!UPLOAD_TABLES.has(table) || !file.name.toLowerCase().endsWith(".parquet")) return jsonError(`Invalid table file: ${file.name}`);
     if (!(await isParquet(file))) return jsonError(`Invalid Parquet file: ${file.name}`);
     const key = `${timestamp}-ACCESS-${table}.parquet`;
     await bucket.put(key, file.stream(), { httpMetadata: { contentType: "application/vnd.apache.parquet" } });
@@ -100,7 +100,7 @@ async function plans(request: Request, env: Env): Promise<Response> {
   const body = await request.json() as { name?: string; tables?: PlanTable[] };
   const name = body.name?.trim();
   if (!name || !Array.isArray(body.tables) || !body.tables.length) return jsonError("name and tables are required");
-  if (body.tables.some(table => !TABLES.has(table.name) || !Array.isArray(table.retainColumns) || !table.retainColumns.length)) return jsonError("Invalid table selection");
+  if (body.tables.some(table => !table.name || !Array.isArray(table.retainColumns) || !table.retainColumns.length)) return jsonError("Invalid table selection");
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   try {
@@ -116,7 +116,7 @@ async function planById(request: Request, env: Env, id: string): Promise<Respons
   if (request.method === "PUT") {
     const body = await request.json() as { name?: string; tables?: PlanTable[] };
     const name = body.name?.trim();
-    if (!name || !Array.isArray(body.tables) || !body.tables.length) return jsonError("name and tables are required");
+    if (!name || !Array.isArray(body.tables) || !body.tables.length || body.tables.some(table => !table.name || !Array.isArray(table.retainColumns) || !table.retainColumns.length)) return jsonError("name and tables are required");
     const now = new Date().toISOString();
     await env.PLANS_DB.prepare("UPDATE plans SET name = ?, tables_json = ?, updated_at = ? WHERE id = ?").bind(name, JSON.stringify(body.tables), now, id).run();
     const updated = await env.PLANS_DB.prepare("SELECT * FROM plans WHERE id = ?").bind(id).first() as Record<string, unknown>;
