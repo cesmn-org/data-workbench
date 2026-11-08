@@ -10,11 +10,23 @@ interface Env {
   ACTIONS_TOKEN: string;
 }
 
+interface RefreshRun {
+  id: string;
+  timestamp: string;
+  status: string;
+  currentIndex: number;
+  currentWorkflow?: string;
+  currentRunId?: number;
+  workflows: { workflow: string; status?: string; runId?: number }[];
+  error?: string;
+}
+
 const OBJECT_PREFIX = "/api/objects/";
 const OBJECTS_PATH = "/api/objects";
 const UPLOAD_PATH = "/api/uploads";
 const PLANS_PATH = "/api/plans";
 const REFRESH_PATH = "/api/refresh";
+const REFRESH_STATUS_PATH = "/api/refresh/status/";
 const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
 const GITHUB_OWNER = "cesmn-org";
 const GITHUB_REPO = "data-workbench";
@@ -97,22 +109,71 @@ function utcTimestamp(date: Date): string {
   return `${iso.slice(0, 10)}-${iso.slice(11, 19).replace(/:/g, "")}`;
 }
 
+function githubHeaders(env: Env): HeadersInit {
+  return { Authorization: `Bearer ${env.ACTIONS_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "User-Agent": "data-workbench" };
+}
+
 async function refresh(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
   if (!env.ACTIONS_TOKEN) return jsonError("ACTIONS_TOKEN is not configured", 503);
-  const timestamp = utcTimestamp(new Date());
-  const headers = { Authorization: `Bearer ${env.ACTIONS_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "User-Agent": "data-workbench" };
-  const dispatched: { workflow: string; status: number }[] = [];
-  for (const workflow of SOURCE_WORKFLOWS) {
-    const response = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/dispatches`, {
-      method: "POST", headers, body: JSON.stringify({ ref: "main", inputs: { snapshot_timestamp: timestamp } }),
-    });
-    if (!response.ok) return jsonError(`Unable to dispatch ${workflow} (${response.status})`, 502);
-    dispatched.push({ workflow, status: response.status });
-  }
-  return Response.json({ timestamp, workflows: dispatched }, { status: 202 });
+  const timestamp = utcTimestamp(new Date()); const id = crypto.randomUUID(); const now = new Date().toISOString();
+  const workflows = SOURCE_WORKFLOWS.map(workflow => ({ workflow, status: "pending" }));
+  await env.PLANS_DB.prepare("INSERT INTO refresh_runs (id, snapshot_timestamp, current_index, status, workflows_json, created_at, updated_at) VALUES (?, ?, 0, 'queued', ?, ?, ?)").bind(id, timestamp, JSON.stringify(workflows), now, now).run();
+  return Response.json({ id, timestamp, status: "queued", workflows }, { status: 202 });
 }
 
+async function refreshStatus(env: Env, id: string): Promise<Response> {
+  const row = await env.PLANS_DB.prepare("SELECT * FROM refresh_runs WHERE id = ?").bind(id).first() as Record<string, unknown> | null;
+  if (!row) return jsonError("Refresh run not found", 404);
+  const workflows = JSON.parse(String(row.workflows_json)) as { workflow: string; status: string; runId?: number }[];
+  const index = Number(row.current_index);
+  if (row.status === "success" || row.status === "failed" || index >= SOURCE_WORKFLOWS.length) {
+    return Response.json({ id: row.id, timestamp: row.snapshot_timestamp, status: row.status, currentIndex: index, currentRunId: row.current_run_id, workflows, error: row.error });
+  }
+
+  const headers = githubHeaders(env);
+  const workflow = SOURCE_WORKFLOWS[index];
+  const current = workflows[index];
+  try {
+    if (current.status === "pending") {
+      const dispatch = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/dispatches`, { method: "POST", headers, body: JSON.stringify({ ref: "main", inputs: { snapshot_timestamp: row.snapshot_timestamp } }) });
+      if (!dispatch.ok) throw new Error(`Unable to dispatch ${workflow} (${dispatch.status})`);
+      workflows[index] = { workflow, status: "dispatching" };
+      await env.PLANS_DB.prepare("UPDATE refresh_runs SET status = 'running', workflows_json = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(workflows), new Date().toISOString(), id).run();
+      return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
+    }
+
+    let runId = row.current_run_id as number | null;
+    if (current.status === "dispatching") {
+      const runsResponse = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/runs?event=workflow_dispatch&branch=main&per_page=10`, { headers });
+      if (!runsResponse.ok) throw new Error(`Unable to find run for ${workflow} (${runsResponse.status})`);
+      const runs = await runsResponse.json() as { workflow_runs: { id: number; created_at: string; status: string }[] };
+      const run = runs.workflow_runs.find(candidate => candidate.created_at >= String(row.created_at));
+      if (!run) return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
+      runId = run.id;
+      workflows[index] = { workflow, status: "in_progress", runId };
+      await env.PLANS_DB.prepare("UPDATE refresh_runs SET current_run_id = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(runId, JSON.stringify(workflows), new Date().toISOString(), id).run();
+      return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
+    }
+
+    if (!runId) throw new Error(`Missing run ID for ${workflow}`);
+    const runResponse = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/runs/${runId}`, { headers });
+    if (!runResponse.ok) throw new Error(`Unable to read ${workflow} status (${runResponse.status})`);
+    const run = await runResponse.json() as { status: string; conclusion: string | null };
+    if (run.status !== "completed") return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
+    if (run.conclusion !== "success") throw new Error(`${workflow} finished with ${run.conclusion ?? "unknown"}`);
+
+    workflows[index] = { workflow, status: "success", runId };
+    const nextIndex = index + 1;
+    const status = nextIndex === SOURCE_WORKFLOWS.length ? "success" : "running";
+    await env.PLANS_DB.prepare("UPDATE refresh_runs SET current_index = ?, current_run_id = NULL, status = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(nextIndex, status, JSON.stringify(workflows), new Date().toISOString(), id).run();
+    return Response.json({ id, timestamp: row.snapshot_timestamp, status, currentIndex: nextIndex, workflows, error: null });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await env.PLANS_DB.prepare("UPDATE refresh_runs SET status = 'failed', workflows_json = ?, updated_at = ?, error = ? WHERE id = ?").bind(JSON.stringify(workflows), new Date().toISOString(), message, id).run();
+    return Response.json({ id, timestamp: row.snapshot_timestamp, status: "failed", currentIndex: index, workflows, error: message }, { status: 502 });
+  }
+}
 async function isParquet(file: File): Promise<boolean> {
   if (file.size < 8) return false;
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -186,6 +247,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/api/health") return Response.json({ ok: true, service: "data-workbench" });
     if (url.pathname === REFRESH_PATH) return refresh(request, env);
+    if (url.pathname.startsWith(REFRESH_STATUS_PATH)) { const id = url.pathname.slice(REFRESH_STATUS_PATH.length); if (!id || id.includes("/")) return jsonError("Invalid refresh id"); return refreshStatus(env, id); }
     if (url.pathname === OBJECTS_PATH) {
       if (request.method === "GET") return listObjects(env.DATA_BUCKET);
       if (request.method === "DELETE") return deleteObjects(request, env.DATA_BUCKET);
