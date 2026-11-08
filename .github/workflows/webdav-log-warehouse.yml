@@ -184,10 +184,10 @@ jobs:
 
           object_keys = {
               "Log Incoming": (
-                  f"WEBDAV-LOG-WAREHOUSE-INCOMING-{timestamp}.parquet"
+                  f"WEBDAV-LOG_WAREHOUSE_INCOMING-{timestamp}.parquet"
               ),
               "Log Outgoing": (
-                  f"WEBDAV-LOG-WAREHOUSE-OUTGOING-{timestamp}.parquet"
+                  f"WEBDAV-LOG_WAREHOUSE_OUTGOING-{timestamp}.parquet"
               ),
           }
 

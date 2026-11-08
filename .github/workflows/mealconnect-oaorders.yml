@@ -178,7 +178,7 @@ jobs:
               timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
 
           object_key = (
-              f"MEALCONNECT-CUSTOMER-ORDERS-{timestamp}.parquet"
+              f"MEALCONNECT-CUSTOMER_ORDERS-{timestamp}.parquet"
           )
 
           # Connect to Cloudflare R2.
