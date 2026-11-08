@@ -1,0 +1,210 @@
+
+name: WebDAV LogRescue Fetcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_timestamp:
+        description: UTC snapshot timestamp (YYYY-MM-DD-HHMMSS)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-log-rescue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out data-bridge
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "git+https://github.com/cesmn-org/libfetch.git"
+          python -m pip install pandas pyarrow boto3 openpyxl
+
+      - name: Fetch, process, generate Parquet, and upload to R2
+        env:
+          WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
+          WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          SNAPSHOT_TIMESTAMP: ${{ inputs.snapshot_timestamp }}
+        run: |
+          python - <<'PY'
+          import os
+          import io
+          import re
+          from datetime import datetime, timezone
+
+          import boto3
+          import pandas as pd
+
+          from botocore.config import Config
+          from libfetch import LogRescue
+
+          username = os.environ["WEBDAV_USERNAME"]
+          password = os.environ["WEBDAV_PASSWORD"]
+
+          account_id = os.environ["CLOUDFLARE_R2_ACCOUNT_ID"]
+          access_key = os.environ["CLOUDFLARE_R2_ACCESS_KEY_ID"]
+          secret_key = os.environ["CLOUDFLARE_R2_SECRET_ACCESS_KEY"]
+
+          bucket = "data-bridge"
+
+          required_values = {
+              "WEBDAV_USERNAME": username,
+              "WEBDAV_PASSWORD": password,
+              "CLOUDFLARE_R2_ACCOUNT_ID": account_id,
+              "CLOUDFLARE_R2_ACCESS_KEY_ID": access_key,
+              "CLOUDFLARE_R2_SECRET_ACCESS_KEY": secret_key,
+          }
+
+          missing = [
+              name for name, value in required_values.items()
+              if not value
+          ]
+
+          if missing:
+              raise RuntimeError(
+                  f"Required secrets are missing: {', '.join(missing)}"
+              )
+
+          expected_columns = [
+              "Date",
+              "Location",
+              "Bakery",
+              "Dairy",
+              "Deli",
+              "Dry",
+              "Frozen",
+              "Nonfood",
+              "Produce",
+              "Total",
+          ]
+
+          # Fetch the workbook.
+          fetcher = LogRescue(username, password).fetch()
+          data = fetcher.to_bytes()
+
+          if not data:
+              raise RuntimeError("The downloaded report is empty")
+
+          # Read only the Log worksheet. The first two rows are labels.
+          workbook = pd.ExcelFile(io.BytesIO(data))
+
+          if "Log" not in workbook.sheet_names:
+              raise RuntimeError("Expected Log worksheet is missing")
+
+          df = pd.read_excel(
+              workbook,
+              sheet_name="Log",
+              skiprows=2,
+              dtype=str,
+              keep_default_na=False,
+          )
+
+          if list(df.columns) != expected_columns:
+              raise RuntimeError(
+                  "Unexpected Log worksheet columns: "
+                  f"{list(df.columns)}"
+              )
+
+          if len(df) == 0:
+              raise RuntimeError("Log worksheet contains no data rows")
+
+          # Preserve all columns and values.
+          original_rows = len(df)
+
+          # Generate Parquet in memory.
+          parquet_buffer = io.BytesIO()
+
+          df.to_parquet(
+              parquet_buffer,
+              engine="pyarrow",
+              index=False,
+          )
+
+          parquet_data = parquet_buffer.getvalue()
+
+          if not parquet_data:
+              raise RuntimeError("Parquet generation produced an empty file")
+
+          # Verify the generated Parquet.
+          verified = pd.read_parquet(
+              io.BytesIO(parquet_data),
+              engine="pyarrow",
+          )
+
+          if len(verified) != original_rows:
+              raise RuntimeError("Parquet row count verification failed")
+
+          if list(verified.columns) != expected_columns:
+              raise RuntimeError("Parquet column verification failed")
+
+          if not verified.equals(df):
+              raise RuntimeError("Parquet data verification failed")
+
+          # Create a unique snapshot filename.
+          timestamp = os.environ.get("SNAPSHOT_TIMESTAMP", "").strip()
+          if timestamp:
+              if not re.fullmatch(r"\d{4}-\d{2}-\d{6}", timestamp):
+                  raise RuntimeError("snapshot_timestamp must match YYYY-MM-DD-HHMMSS")
+          else:
+              timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+
+          object_key = (
+              f"WEBDAV-LOG-RESCUE-{timestamp}.parquet"
+          )
+
+          # Upload directly to R2.
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=(
+                  f"https://{account_id}.r2.cloudflarestorage.com"
+              ),
+              aws_access_key_id=access_key,
+              aws_secret_access_key=secret_key,
+              region_name="auto",
+              config=Config(signature_version="s3v4"),
+          )
+
+          s3.put_object(
+              Bucket=bucket,
+              Key=object_key,
+              Body=parquet_data,
+              ContentType="application/vnd.apache.parquet",
+          )
+
+          # Verify the uploaded object.
+          uploaded = s3.head_object(
+              Bucket=bucket,
+              Key=object_key,
+          )
+
+          if uploaded["ContentLength"] != len(parquet_data):
+              raise RuntimeError("R2 upload size verification failed")
+
+          print("Fetch, processing, and upload successful")
+          print(f"Source filename: {fetcher.suggested_filename}")
+          print(f"Source bytes: {len(data)}")
+          print(f"Parquet bytes: {len(parquet_data)}")
+          print(f"Rows: {len(verified)}")
+          print(f"Columns: {len(verified.columns)}")
+          print("Direct identifiers removed: 0")
+          print("Worksheets included: Log")
+          print("Worksheets excluded: Config")
+          print(f"R2 bucket: {bucket}")
+          print(f"R2 object: {object_key}")
+          print("R2 upload verification: passed")
+          PY
