@@ -12,7 +12,6 @@ interface Env {
 const OBJECT_PREFIX = "/api/objects/";
 const UPLOAD_PATH = "/api/uploads";
 const PLANS_PATH = "/api/plans";
-const UPLOAD_TABLES = new Set(["tblVisits", "tblClientService", "tblClientInformation"]);
 const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
 
 function jsonError(message: string, status = 400): Response {
@@ -28,7 +27,7 @@ function objectKeyFromRequest(url: URL): string | null {
 
 function isAllowedObjectKey(key: string): boolean {
   const name = key.split("/").pop() ?? "";
-  return /^\d{4}-\d{2}-\d{2}-\d{6}-ACCESS-(tblVisits|tblClientService|tblClientInformation)\.parquet$/.test(name);
+  return /^\d{4}-\d{2}-\d{2}-\d{6}-ACCESS-[A-Za-z0-9_]+\.parquet$/.test(name);
 }
 
 function objectHeaders(object: R2Object, size: number): Headers {
@@ -78,7 +77,7 @@ async function uploadBatch(request: Request, bucket: R2Bucket): Promise<Response
   const uploaded: { table: string; key: string; size: number }[] = [];
   for (const file of files) {
     const table = file.name.replace(/\.parquet$/i, "");
-    if (!UPLOAD_TABLES.has(table) || !file.name.toLowerCase().endsWith(".parquet")) return jsonError(`Invalid table file: ${file.name}`);
+    if (!table || !/^[A-Za-z0-9_]+$/.test(table) || !file.name.toLowerCase().endsWith(".parquet")) return jsonError(`Invalid table file: ${file.name}`);
     if (!(await isParquet(file))) return jsonError(`Invalid Parquet file: ${file.name}`);
     const key = `${timestamp}-ACCESS-${table}.parquet`;
     await bucket.put(key, file.stream(), { httpMetadata: { contentType: "application/vnd.apache.parquet" } });

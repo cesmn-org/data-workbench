@@ -3,7 +3,7 @@ import { Buffer } from 'buffer'
 ;(globalThis as typeof globalThis & { Buffer: typeof Buffer; process?: unknown }).Buffer = Buffer
 ;(globalThis as typeof globalThis & { process?: unknown }).process = { browser: true, env: {}, versions: {}, nextTick: queueMicrotask } as any
 
-self.onmessage = async (event: MessageEvent<{ file: File; plan?: { name?: string; tables: Record<string, { retainColumns: string[] }> }; inspect?: boolean }>) => {
+self.onmessage = async (event: MessageEvent<{ file: File; plan: { name?: string; tables: Record<string, { retainColumns: string[] }> }; inspect?: boolean }>) => {
   try {
     const { inspectAccessFile, processAccessFile } = await import('./access-processing')
     if (event.data.inspect) {

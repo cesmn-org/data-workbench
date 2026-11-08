@@ -1,17 +1,12 @@
 import { Buffer } from 'buffer'
 import MDBReader from 'mdb-reader'
 import * as duckdb from '@duckdb/duckdb-wasm'
-import config from './config/access-import.json'
-
 ;(globalThis as typeof globalThis & { Buffer: typeof Buffer }).Buffer = Buffer
 
-type ImportConfig = { version: number; tables: Record<string, { retainColumns: string[] }> }
 export type TableReport = { name: string; rows: number; columns: string[]; parquetBytes: Uint8Array }
 export type ProcessingPlan = { name?: string; tables: Record<string, { retainColumns: string[] }> }
 export type AccessTableSchema = { name: string; columns: string[] }
 export type ProcessingReport = { tables: TableReport[]; missingTables: string[]; missingColumns: Record<string, string[]> }
-
-const importConfig = config as ImportConfig
 
 function jsonSafe(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString()
@@ -38,7 +33,7 @@ export async function inspectAccessFile(file: File): Promise<AccessTableSchema[]
   return reader.getTableNames().map(name => ({ name, columns: reader.getTable(name).getColumns().map(column => column.name) }))
 }
 
-export async function processAccessFile(file: File, onProgress: (message: string) => void, plan: ProcessingPlan = { tables: importConfig.tables }): Promise<ProcessingReport> {
+export async function processAccessFile(file: File, onProgress: (message: string) => void, plan: ProcessingPlan): Promise<ProcessingReport> {
   const reader = new MDBReader(Buffer.from(await file.arrayBuffer()))
   const availableTables = reader.getTableNames()
   const missingTables = Object.keys(plan.tables).filter(name => !availableTables.includes(name))
