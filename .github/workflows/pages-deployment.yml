@@ -29,6 +29,44 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Ensure D1 database and apply migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_NAME: data-workbench-plans
+        run: |
+          set -euo pipefail
+          databases="$(npx wrangler d1 list --json)"
+          database_id="$(printf '%s' "$databases" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const databases = JSON.parse(input);
+              const database = databases.find(item => item.name === process.env.D1_DATABASE_NAME);
+              process.stdout.write(database?.uuid ?? "");
+            });
+          ' )"
+          if [ -z "$database_id" ]; then
+            echo "Creating D1 database $D1_DATABASE_NAME."
+            create_output="$(npx wrangler d1 create "$D1_DATABASE_NAME" --binding=PLANS_DB 2>&1)"
+            database_id="$(printf '%s' "$create_output" | node -e '
+              let input = "";
+              process.stdin.on("data", chunk => input += chunk);
+              process.stdin.on("end", () => process.stdout.write(input.match(/[0-9a-f]{8}-[0-9a-f-]{27,}/i)?.[0] ?? ""));
+            ' )"
+          fi
+          if [ -z "$database_id" ]; then
+            echo "Unable to determine D1 database ID." >&2
+            exit 1
+          fi
+          D1_DATABASE_ID="$database_id" node -e '
+            const fs = require("fs");
+            const path = "wrangler.jsonc";
+            const text = fs.readFileSync(path, "utf8");
+            fs.writeFileSync(path, text.replace("REPLACE_WITH_D1_DATABASE_ID", process.env.D1_DATABASE_ID));
+          '
+          npx wrangler d1 migrations apply "$D1_DATABASE_NAME" --remote
+
       - name: Build application
         run: npm run build
 

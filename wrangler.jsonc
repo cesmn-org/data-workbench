@@ -14,5 +14,12 @@
       "binding": "DATA_BUCKET",
       "bucket_name": "data-bridge"
     }
+  ],
+  "d1_databases": [
+    {
+      "binding": "PLANS_DB",
+      "database_name": "data-workbench-plans",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
   ]
 }

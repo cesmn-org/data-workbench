@@ -1,94 +1,106 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
-import config from './config/access-import.json'
-import { type ProcessingReport } from './access-processing'
+import { type AccessTableSchema, type ProcessingReport } from './access-processing'
 
-type Area = 'operations' | 'datasets' | 'query' | 'reports' | 'exports'
-
-const areas: { id: Area; label: string; description: string }[] = [
-  { id: 'operations', label: 'Data Operations', description: 'Upload Access files and monitor refreshes' },
-  { id: 'datasets', label: 'Datasets', description: 'Browse snapshots and source tables' },
-  { id: 'query', label: 'Query', description: 'Explore data with SQL' },
-  { id: 'reports', label: 'Reports', description: 'Reuse saved queries' },
-  { id: 'exports', label: 'Exports', description: 'Download query results' },
-]
+type PlanTable = { name: string; retainColumns: string[] }
+type Plan = { id: string; name: string; isDefault: boolean; tables: PlanTable[]; createdAt: string; updatedAt: string }
+type Area = 'operations' | 'plans'
 
 function App() {
-  const [activeArea, setActiveArea] = useState<Area>('operations')
-  const [file, setFile] = useState<File>()
+  const [area, setArea] = useState<Area>('operations')
+  const [plans, setPlans] = useState<Plan[]>([])
+  const [selectedPlan, setSelectedPlan] = useState<Plan>()
+  const [planName, setPlanName] = useState('')
+  const [sourceFile, setSourceFile] = useState<File>()
+  const [schemas, setSchemas] = useState<AccessTableSchema[]>([])
+  const [editing, setEditing] = useState(false)
   const [notice, setNotice] = useState('')
   const [processing, setProcessing] = useState(false)
   const [progress, setProgress] = useState('')
   const [report, setReport] = useState<ProcessingReport>()
   const [uploading, setUploading] = useState(false)
   const [uploaded, setUploaded] = useState<{ timestamp: string; objects: { table: string; key: string; size: number }[] }>()
-  const tableCount = Object.keys(config.tables).length
-  const columnCount = useMemo(() => Object.values(config.tables).reduce((total, table) => total + table.retainColumns.length, 0), [])
 
-function processFile() {
-    if (!file) return
-    setProcessing(true); setReport(undefined); setNotice(''); setProgress('Starting background processing…')
+  async function loadPlans() {
+    const response = await fetch('/api/plans')
+    if (!response.ok) throw new Error('Unable to load plans')
+    const loaded = await response.json() as Plan[]
+    setPlans(loaded)
+    setSelectedPlan(current => loaded.find(plan => plan.id === current?.id) ?? loaded.find(plan => plan.isDefault) ?? loaded[0])
+  }
+  useEffect(() => { loadPlans().catch(error => setNotice(String(error))) }, [])
+
+  function inspect(file: File) {
+    setSourceFile(file); setSchemas([]); setReport(undefined); setUploaded(undefined); setNotice('Reading Access tables and columns…')
     const worker = new Worker(new URL('./access-processing.worker.ts', import.meta.url), { type: 'module' })
     worker.onmessage = event => {
-      const message = event.data as { type: string; message?: string; report?: ProcessingReport }
-      if (message.type === 'progress') setProgress(message.message ?? '')
-      if (message.type === 'complete' && message.report) {
-        setReport(message.report)
-        setNotice(message.report.missingTables.length || Object.keys(message.report.missingColumns).length ? 'Processing completed with configuration mismatches.' : 'Processing completed. The raw Access file stayed in this browser.')
-        setProcessing(false); worker.terminate()
-      }
-      if (message.type === 'error') { setNotice(`Processing failed: ${message.message}`); setProcessing(false); worker.terminate() }
+      if (event.data.type === 'inspected') { setSchemas(event.data.schemas); setNotice('Choose tables and columns, then save the plan.'); worker.terminate() }
+      if (event.data.type === 'error') { setNotice(`Inspection failed: ${event.data.message}`); worker.terminate() }
+    }
+    worker.onerror = event => { setNotice(`Inspection failed: ${event.message}`); worker.terminate() }
+    worker.postMessage({ file, inspect: true })
+  }
+
+  function toggleTable(schema: AccessTableSchema) {
+    const current = selectedPlan?.tables ?? []
+    const exists = current.some(table => table.name === schema.name)
+    const tables = exists ? current.filter(table => table.name !== schema.name) : [...current, { name: schema.name, retainColumns: schema.columns }]
+    setSelectedPlan(plan => plan ? { ...plan, tables } : { id: '', name: planName, isDefault: false, tables, createdAt: '', updatedAt: '' })
+  }
+
+  function toggleColumn(tableName: string, column: string) {
+    setSelectedPlan(plan => plan ? { ...plan, tables: plan.tables.map(table => table.name !== tableName ? table : { ...table, retainColumns: table.retainColumns.includes(column) ? table.retainColumns.filter(item => item !== column) : [...table.retainColumns, column] }) } : plan)
+  }
+
+  async function savePlan() {
+    if (!planName.trim() || !selectedPlan?.tables.length) return setNotice('Enter a plan name and select at least one table.')
+    const editingExisting = Boolean(selectedPlan.id)
+    const response = await fetch(editingExisting ? `/api/plans/${selectedPlan.id}` : '/api/plans', { method: editingExisting ? 'PUT' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: planName.trim(), tables: selectedPlan.tables }) })
+    const body = await response.json() as Plan & { error?: string }
+    if (!response.ok) return setNotice(body.error ?? 'Unable to save plan')
+    await loadPlans(); setSelectedPlan(body); setEditing(false); setNotice('Plan saved.')
+  }
+
+  async function deletePlan(plan: Plan) {
+    if (!confirm(`Delete plan “${plan.name}”?`)) return
+    const response = await fetch(`/api/plans/${plan.id}`, { method: 'DELETE' })
+    if (!response.ok) return setNotice('Unable to delete plan')
+    await loadPlans(); setNotice('Plan deleted.')
+  }
+
+  async function makeDefault(plan: Plan) {
+    const response = await fetch(`/api/plans/${plan.id}`, { method: 'POST' })
+    if (!response.ok) return setNotice('Unable to set default plan')
+    await loadPlans(); setNotice(`“${plan.name}” is now the default plan.`)
+  }
+
+  function processFile() {
+    if (!sourceFile || !selectedPlan) return
+    setProcessing(true); setReport(undefined); setUploaded(undefined); setProgress('Starting background processing…')
+    const worker = new Worker(new URL('./access-processing.worker.ts', import.meta.url), { type: 'module' })
+    worker.onmessage = event => {
+      if (event.data.type === 'progress') setProgress(event.data.message)
+      if (event.data.type === 'complete') { setReport(event.data.report); setProcessing(false); worker.terminate(); setNotice('Processing complete. The Access file stayed in this browser.') }
+      if (event.data.type === 'error') { setNotice(`Processing failed: ${event.data.message}`); setProcessing(false); worker.terminate() }
     }
     worker.onerror = event => { setNotice(`Processing failed: ${event.message}`); setProcessing(false); worker.terminate() }
-    worker.postMessage({ file })
+    worker.postMessage({ file: sourceFile, plan: { name: selectedPlan.name, tables: Object.fromEntries(selectedPlan.tables.map(table => [table.name, { retainColumns: table.retainColumns }])) } })
   }
 
   async function uploadResults() {
-    if (!file || !report?.tables.length) return
-    setUploading(true); setNotice(''); setUploaded(undefined)
+    if (!sourceFile || !report?.tables.length) return
+    setUploading(true)
     try {
-      const form = new FormData()
-      form.set('sourceFileName', 'ACCESS')
+      const form = new FormData(); form.set('sourceFileName', 'ACCESS')
       for (const table of report.tables) form.append('file', new File([table.parquetBytes.buffer.slice(table.parquetBytes.byteOffset, table.parquetBytes.byteOffset + table.parquetBytes.byteLength) as ArrayBuffer], `${table.name}.parquet`, { type: 'application/vnd.apache.parquet' }))
-      const response = await fetch('/api/uploads', { method: 'POST', body: form })
-      const body = await response.json() as { error?: string; timestamp?: string; objects?: { table: string; key: string; size: number }[] }
-      if (!response.ok || !body.timestamp || !body.objects) throw new Error(body.error || `Upload failed (${response.status})`)
+      const response = await fetch('/api/uploads', { method: 'POST', body: form }); const body = await response.json() as { error?: string; timestamp?: string; objects?: { table: string; key: string; size: number }[] }
+      if (!response.ok || !body.timestamp || !body.objects) throw new Error(body.error ?? `Upload failed (${response.status})`)
       setUploaded({ timestamp: body.timestamp, objects: body.objects }); setNotice('Parquet snapshots uploaded to private R2.')
-    } catch (error) {
-      setNotice(`Upload failed: ${error instanceof Error ? error.message : String(error)}`)
-    } finally { setUploading(false) }
+    } catch (error) { setNotice(`Upload failed: ${error instanceof Error ? error.message : String(error)}`) } finally { setUploading(false) }
   }
 
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><div className="brand-mark">DW</div><div><strong>Data Workbench</strong><span>Operational data, together</span></div></div>
-        <nav aria-label="Main navigation">
-          <p className="nav-label">WORKSPACE</p>
-          {areas.map(area => <button key={area.id} className={`nav-item ${activeArea === area.id ? 'active' : ''}`} onClick={() => setActiveArea(area.id)}><span className="nav-icon">{area.id === 'operations' ? '↗' : area.id === 'datasets' ? '▦' : area.id === 'query' ? '⌘' : area.id === 'reports' ? '▤' : '⇩'}</span><span>{area.label}</span>{area.id === 'operations' && <span className="nav-dot" />}</button>)}
-        </nav>
-        <div className="sidebar-footer"><span className="status-dot" />Local workspace<div className="muted">R2 connection not configured</div></div>
-      </aside>
-
-      <main className="main-content">
-        <header className="topbar"><div><p className="eyebrow">WORKSPACE / {activeArea.toUpperCase()}</p><h1>{areas.find(area => area.id === activeArea)?.label}</h1></div><div className="top-actions"><button className="icon-button" aria-label="Help">?</button><div className="avatar">JM</div></div></header>
-
-        {activeArea === 'operations' ? <>
-          <section className="intro-row"><div><h2>Keep your data moving.</h2><p>Process an Access database in your browser, then send only the prepared Parquet snapshots to R2.</p></div><div className="privacy-badge"><span>✓</span><div><strong>Privacy boundary</strong><small>Raw Access files stay on this device</small></div></div></section>
-          {notice && <div className="notice"><span>i</span>{notice}<button onClick={() => setNotice('')}>×</button></div>}
-          <section className="operation-grid">
-            <div className="card upload-card"><div className="card-heading"><div><p className="section-kicker">STEP 01</p><h3>Upload Access database</h3></div><span className="step-badge">1</span></div><p className="card-copy">Choose an <code>.accdb</code> file. Its contents will be read and transformed locally in your browser.</p><label className="dropzone"><input type="file" accept=".accdb,.mdb,application/x-msaccess" onChange={event => { setFile(event.target.files?.[0]); setReport(undefined); setNotice('') }} /><span className="upload-icon">↑</span><strong>{file?.name || 'Choose an Access file'}</strong><small>{file ? 'Ready to process with the repository configuration' : 'or drag and drop it here'}</small></label>{file && <div className="selected-file"><span className="file-icon">▣</span><div><strong>{file.name}</strong><small>Selected locally</small></div><span className="check">✓</span></div>}</div>
-            <div className="card profile-card"><div className="card-heading"><div><p className="section-kicker">STEP 02</p><h3>Import profile</h3></div><button className="text-button" onClick={() => setNotice('Processing rules are managed in src/config/access-import.json.')}>View source</button></div><p className="card-copy">Choose the tables and columns once. Future uploads will reuse this selection automatically.</p><div className="profile-summary"><div className="profile-icon">⚙</div><div><strong>Repository import configuration</strong><small>{tableCount} tables · {columnCount} columns retained</small></div></div><p className="saved-at">Version {config.version} · deployed with this application</p><button className="secondary-button" onClick={() => setNotice('Processing rules are managed in src/config/access-import.json.')} >View configuration <span>→</span></button></div>
-          </section>
-          <section className="card refresh-card"><div className="refresh-icon">↻</div><div className="refresh-copy"><p className="section-kicker">STEP 03</p><h3>Process configured tables</h3><p>{progress || 'Apply the repository configuration locally and generate Parquet output for each configured table.'}</p></div><button className="primary-button" disabled={!file || processing} onClick={processFile}>{processing ? 'Processing…' : 'Process Access file'} <span>→</span></button></section>
-          {report && <section className="card results-card"><div className="section-title"><div><p className="section-kicker">RESULT</p><h3>Processing report</h3></div></div><div className="result-list">{report.tables.map(table => <div className="result-row" key={table.name}><strong>{table.name}</strong><span>{table.rows.toLocaleString()} rows · {table.columns.length} columns · {(table.parquetBytes.byteLength / 1024).toFixed(1)} KiB Parquet</span></div>)}</div>{report.missingTables.length > 0 && <p className="error-text">Missing tables: {report.missingTables.join(', ')}</p>}{Object.entries(report.missingColumns).map(([name, columns]) => <p className="error-text" key={name}>Missing columns in {name}: {columns.join(', ')}</p>)}{report.tables.length > 0 && <button className="primary-button upload-results-button" disabled={uploading} onClick={uploadResults}>{uploading ? 'Uploading…' : 'Upload Parquet snapshots to R2'} <span>→</span></button>}{uploaded && <div className="upload-summary"><strong>Uploaded batch {uploaded.timestamp}</strong>{uploaded.objects.map(object => <span key={object.key}>{object.key} · {(object.size / 1024).toFixed(1)} KiB</span>)}</div>}</section>}
-          <section className="activity-section"><div className="section-title"><div><p className="section-kicker">ACTIVITY</p><h3>Recent operations</h3></div><button className="text-button">View history →</button></div><div className="empty-activity"><div className="empty-icon">◷</div><strong>No operations yet</strong><span>Your completed uploads and refreshes will appear here.</span></div></section>
-        </> : <section className="placeholder card"><div className="placeholder-icon">{activeArea === 'datasets' ? '▦' : activeArea === 'query' ? '⌘' : activeArea === 'reports' ? '▤' : '⇩'}</div><p className="section-kicker">COMING NEXT</p><h2>{areas.find(area => area.id === activeArea)?.label}</h2><p>{areas.find(area => area.id === activeArea)?.description}. This area will connect to the shared R2 + Parquet data layer.</p><button className="secondary-button" onClick={() => setActiveArea('operations')}>Back to Data Operations</button></section>}
-
-
-      </main>
-    </div>
-  )
+  const activePlan = selectedPlan ?? plans.find(plan => plan.isDefault)
+  return <div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">DW</div><div><strong>Data Workbench</strong><span>Operational data, together</span></div></div><nav><p className="nav-label">WORKSPACE</p><button className={`nav-item ${area === 'operations' ? 'active' : ''}`} onClick={() => setArea('operations')}>↗ <span>Data Operations</span></button><button className={`nav-item ${area === 'plans' ? 'active' : ''}`} onClick={() => setArea('plans')}>▦ <span>Processing Plans</span></button></nav></aside><main className="main-content"><header className="topbar"><div><p className="eyebrow">DATA WORKBENCH / {area.toUpperCase()}</p><h1>{area === 'operations' ? 'Data Operations' : 'Processing Plans'}</h1></div></header>{notice && <div className="notice">{notice}<button onClick={() => setNotice('')}>×</button></div>}{area === 'plans' ? <section className="workspace"><div className="section-title"><div><p className="section-kicker">CONFIGURATION</p><h2>Processing plans</h2></div><button className="primary-button" onClick={() => { setEditing(true); setSelectedPlan({ id: '', name: '', isDefault: false, tables: [], createdAt: '', updatedAt: '' }); setPlanName(''); setSchemas([]) }}>New plan</button></div><div className="plan-grid">{plans.map(plan => <article className={`plan-card ${plan.isDefault ? 'default' : ''}`} key={plan.id}><div><strong>{plan.name}</strong>{plan.isDefault && <span className="plan-badge">DEFAULT</span>}</div><p>{plan.tables.length} tables · {plan.tables.reduce((sum, table) => sum + table.retainColumns.length, 0)} columns</p><div className="plan-actions"><button className="secondary-button" onClick={() => { setSelectedPlan(plan); setPlanName(plan.name); setEditing(true); setSchemas([]) }}>Edit</button>{!plan.isDefault && <button className="text-button" onClick={() => makeDefault(plan)}>Make default</button>}<button className="text-button danger" onClick={() => deletePlan(plan)}>Delete</button></div></article>)}</div>{editing && <section className="card plan-editor"><p className="section-kicker">PLAN EDITOR</p><h3>{selectedPlan?.id ? 'Edit plan' : 'New plan'}</h3><input className="plan-name" value={planName} onChange={event => setPlanName(event.target.value)} placeholder="Plan name" /><p className="card-copy">Upload an Access file to inspect its tables and columns, then choose what this plan retains.</p><label className="secondary-button editor-file"><input type="file" accept=".accdb,.mdb,application/x-msaccess" onChange={event => event.target.files?.[0] && inspect(event.target.files[0])} />{sourceFile ? `Inspecting ${sourceFile.name}` : 'Choose Access file'}</label>{schemas.map(schema => { const selection = selectedPlan?.tables.find(table => table.name === schema.name); return <div className="schema-editor" key={schema.name}><label><input type="checkbox" checked={Boolean(selection)} onChange={() => toggleTable(schema)} /> <strong>{schema.name}</strong></label>{selection && <div className="column-grid">{schema.columns.map(column => <label key={column}><input type="checkbox" checked={selection.retainColumns.includes(column)} onChange={() => toggleColumn(schema.name, column)} />{column}</label>)}</div>}</div>})}<div className="modal-footer"><button className="secondary-button" onClick={() => setEditing(false)}>Cancel</button><button className="primary-button" onClick={savePlan}>Save plan</button></div></section>}</section> : <section className="workspace"><div className="hero"><div><p className="section-kicker">LOCAL-FIRST INGESTION</p><h2>Process with a plan, publish a snapshot.</h2><p>Access files stay in your browser. Choose a saved plan, generate Parquet locally, then upload the prepared snapshot to private R2.</p></div><div className="privacy-badge">✓ <span>Raw files stay local</span></div></div><div className="operation-grid"><section className="card"><p className="section-kicker">STEP 01</p><h3>Choose an Access file</h3><label className="dropzone"><input type="file" accept=".accdb,.mdb,application/x-msaccess" onChange={event => event.target.files?.[0] && inspect(event.target.files[0])}/><span className="upload-icon">↑</span><strong>{sourceFile?.name || 'Choose an Access file'}</strong><small>Used only to inspect and process locally</small></label></section><section className="card"><p className="section-kicker">STEP 02</p><h3>Choose a processing plan</h3><select className="plan-select" value={activePlan?.id ?? ''} onChange={event => setSelectedPlan(plans.find(plan => plan.id === event.target.value))}><option value="">Select a plan</option>{plans.map(plan => <option key={plan.id} value={plan.id}>{plan.name}{plan.isDefault ? ' (default)' : ''}</option>)}</select><p className="card-copy">{activePlan ? `${activePlan.tables.length} tables selected` : 'Create a plan before processing.'}</p><button className="secondary-button" onClick={() => setArea('plans')}>Manage plans →</button></section></div><section className="card refresh-card"><div className="refresh-copy"><p className="section-kicker">STEP 03</p><h3>Process configured tables</h3><p>{progress || 'Generate Parquet in the browser using the selected plan.'}</p></div><button className="primary-button" disabled={!sourceFile || !activePlan || processing} onClick={processFile}>{processing ? 'Processing…' : 'Process Access file'} →</button></section>{report && <section className="card results-card"><div className="section-title"><div><p className="section-kicker">RESULT</p><h3>Processing report</h3></div></div>{report.tables.map(table => <div className="result-row" key={table.name}><strong>{table.name}</strong><span>{table.rows.toLocaleString()} rows · {table.columns.length} columns · {(table.parquetBytes.byteLength / 1024).toFixed(1)} KiB</span></div>)}<button className="primary-button upload-results-button" disabled={uploading} onClick={uploadResults}>{uploading ? 'Uploading…' : 'Upload snapshots to R2'} →</button>{uploaded && <div className="upload-summary"><strong>Uploaded batch {uploaded.timestamp}</strong>{uploaded.objects.map(object => <span key={object.key}>{object.key}</span>)}</div>}</section>}</section>}</main></div>
 }
 
 export default App

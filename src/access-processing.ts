@@ -7,6 +7,8 @@ import config from './config/access-import.json'
 
 type ImportConfig = { version: number; tables: Record<string, { retainColumns: string[] }> }
 export type TableReport = { name: string; rows: number; columns: string[]; parquetBytes: Uint8Array }
+export type ProcessingPlan = { name?: string; tables: Record<string, { retainColumns: string[] }> }
+export type AccessTableSchema = { name: string; columns: string[] }
 export type ProcessingReport = { tables: TableReport[]; missingTables: string[]; missingColumns: Record<string, string[]> }
 
 const importConfig = config as ImportConfig
@@ -31,12 +33,17 @@ async function createDuckDb() {
   return { db, connection: await db.connect() }
 }
 
-export async function processAccessFile(file: File, onProgress: (message: string) => void): Promise<ProcessingReport> {
+export async function inspectAccessFile(file: File): Promise<AccessTableSchema[]> {
+  const reader = new MDBReader(Buffer.from(await file.arrayBuffer()))
+  return reader.getTableNames().map(name => ({ name, columns: reader.getTable(name).getColumns().map(column => column.name) }))
+}
+
+export async function processAccessFile(file: File, onProgress: (message: string) => void, plan: ProcessingPlan = { tables: importConfig.tables }): Promise<ProcessingReport> {
   const reader = new MDBReader(Buffer.from(await file.arrayBuffer()))
   const availableTables = reader.getTableNames()
-  const missingTables = Object.keys(importConfig.tables).filter(name => !availableTables.includes(name))
+  const missingTables = Object.keys(plan.tables).filter(name => !availableTables.includes(name))
   const missingColumns: Record<string, string[]> = {}
-  const selected = Object.entries(importConfig.tables).filter(([name]) => availableTables.includes(name))
+  const selected = Object.entries(plan.tables).filter(([name]) => availableTables.includes(name))
   const { db, connection } = await createDuckDb()
   const reports: TableReport[] = []
 
