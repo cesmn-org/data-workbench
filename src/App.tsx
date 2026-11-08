@@ -20,6 +20,8 @@ function App() {
   const [processing, setProcessing] = useState(false)
   const [progress, setProgress] = useState('')
   const [report, setReport] = useState<ProcessingReport>()
+  const [uploading, setUploading] = useState(false)
+  const [uploaded, setUploaded] = useState<{ timestamp: string; objects: { table: string; key: string; size: number }[] }>()
   const tableCount = Object.keys(config.tables).length
   const columnCount = useMemo(() => Object.values(config.tables).reduce((total, table) => total + table.retainColumns.length, 0), [])
 
@@ -39,6 +41,22 @@ function processFile() {
     }
     worker.onerror = event => { setNotice(`Processing failed: ${event.message}`); setProcessing(false); worker.terminate() }
     worker.postMessage({ file })
+  }
+
+  async function uploadResults() {
+    if (!file || !report?.tables.length) return
+    setUploading(true); setNotice(''); setUploaded(undefined)
+    try {
+      const form = new FormData()
+      form.set('sourceFileName', file.name)
+      for (const table of report.tables) form.append('file', new File([table.parquetBytes.buffer.slice(table.parquetBytes.byteOffset, table.parquetBytes.byteOffset + table.parquetBytes.byteLength) as ArrayBuffer], `${table.name}.parquet`, { type: 'application/vnd.apache.parquet' }))
+      const response = await fetch('/api/uploads', { method: 'POST', body: form })
+      const body = await response.json() as { error?: string; timestamp?: string; objects?: { table: string; key: string; size: number }[] }
+      if (!response.ok || !body.timestamp || !body.objects) throw new Error(body.error || `Upload failed (${response.status})`)
+      setUploaded({ timestamp: body.timestamp, objects: body.objects }); setNotice('Parquet snapshots uploaded to private R2.')
+    } catch (error) {
+      setNotice(`Upload failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally { setUploading(false) }
   }
 
   return (
@@ -63,7 +81,7 @@ function processFile() {
             <div className="card profile-card"><div className="card-heading"><div><p className="section-kicker">STEP 02</p><h3>Import profile</h3></div><button className="text-button" onClick={() => setNotice('Processing rules are managed in src/config/access-import.json.')}>View source</button></div><p className="card-copy">Choose the tables and columns once. Future uploads will reuse this selection automatically.</p><div className="profile-summary"><div className="profile-icon">⚙</div><div><strong>Repository import configuration</strong><small>{tableCount} tables · {columnCount} columns retained</small></div></div><p className="saved-at">Version {config.version} · deployed with this application</p><button className="secondary-button" onClick={() => setNotice('Processing rules are managed in src/config/access-import.json.')} >View configuration <span>→</span></button></div>
           </section>
           <section className="card refresh-card"><div className="refresh-icon">↻</div><div className="refresh-copy"><p className="section-kicker">STEP 03</p><h3>Process configured tables</h3><p>{progress || 'Apply the repository configuration locally and generate Parquet output for each configured table.'}</p></div><button className="primary-button" disabled={!file || processing} onClick={processFile}>{processing ? 'Processing…' : 'Process Access file'} <span>→</span></button></section>
-          {report && <section className="card results-card"><div className="section-title"><div><p className="section-kicker">RESULT</p><h3>Processing report</h3></div></div><div className="result-list">{report.tables.map(table => <div className="result-row" key={table.name}><strong>{table.name}</strong><span>{table.rows.toLocaleString()} rows · {table.columns.length} columns · {(table.parquetBytes.byteLength / 1024).toFixed(1)} KiB Parquet</span></div>)}</div>{report.missingTables.length > 0 && <p className="error-text">Missing tables: {report.missingTables.join(', ')}</p>}{Object.entries(report.missingColumns).map(([name, columns]) => <p className="error-text" key={name}>Missing columns in {name}: {columns.join(', ')}</p>)}</section>}
+          {report && <section className="card results-card"><div className="section-title"><div><p className="section-kicker">RESULT</p><h3>Processing report</h3></div></div><div className="result-list">{report.tables.map(table => <div className="result-row" key={table.name}><strong>{table.name}</strong><span>{table.rows.toLocaleString()} rows · {table.columns.length} columns · {(table.parquetBytes.byteLength / 1024).toFixed(1)} KiB Parquet</span></div>)}</div>{report.missingTables.length > 0 && <p className="error-text">Missing tables: {report.missingTables.join(', ')}</p>}{Object.entries(report.missingColumns).map(([name, columns]) => <p className="error-text" key={name}>Missing columns in {name}: {columns.join(', ')}</p>)}{report.tables.length > 0 && <button className="primary-button upload-results-button" disabled={uploading} onClick={uploadResults}>{uploading ? 'Uploading…' : 'Upload Parquet snapshots to R2'} <span>→</span></button>}{uploaded && <div className="upload-summary"><strong>Uploaded batch {uploaded.timestamp}</strong>{uploaded.objects.map(object => <span key={object.key}>{object.key} · {(object.size / 1024).toFixed(1)} KiB</span>)}</div>}</section>}
           <section className="activity-section"><div className="section-title"><div><p className="section-kicker">ACTIVITY</p><h3>Recent operations</h3></div><button className="text-button">View history →</button></div><div className="empty-activity"><div className="empty-icon">◷</div><strong>No operations yet</strong><span>Your completed uploads and refreshes will appear here.</span></div></section>
         </> : <section className="placeholder card"><div className="placeholder-icon">{activeArea === 'datasets' ? '▦' : activeArea === 'query' ? '⌘' : activeArea === 'reports' ? '▤' : '⇩'}</div><p className="section-kicker">COMING NEXT</p><h2>{areas.find(area => area.id === activeArea)?.label}</h2><p>{areas.find(area => area.id === activeArea)?.description}. This area will connect to the shared R2 + Parquet data layer.</p><button className="secondary-button" onClick={() => setActiveArea('operations')}>Back to Data Operations</button></section>}
 
