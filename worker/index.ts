@@ -7,13 +7,25 @@ interface Env {
   ASSETS: Fetcher;
   DATA_BUCKET: R2Bucket;
   PLANS_DB: D1Database;
+  ACTIONS_TOKEN: string;
 }
 
 const OBJECT_PREFIX = "/api/objects/";
 const OBJECTS_PATH = "/api/objects";
 const UPLOAD_PATH = "/api/uploads";
 const PLANS_PATH = "/api/plans";
+const REFRESH_PATH = "/api/refresh";
 const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
+const GITHUB_OWNER = "cesmn-org";
+const GITHUB_REPO = "data-workbench";
+const SOURCE_WORKFLOWS = [
+  "clickncollect-orders.yml",
+  "mealconnect-oadist.yml",
+  "mealconnect-oaorders.yml",
+  "webdav-log-anonymous-programs.yml",
+  "webdav-log-rescue.yml",
+  "webdav-log-warehouse.yml",
+];
 
 function jsonError(message: string, status = 400): Response {
   return Response.json({ error: message }, { status });
@@ -80,7 +92,26 @@ async function serveObject(request: Request, bucket: R2Bucket, key: string): Pro
   return new Response(request.method === "HEAD" ? null : object.body, { status: range ? 206 : 200, headers });
 }
 
-function utcTimestamp(date: Date): string { return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "").replace("T", "-"); }
+function utcTimestamp(date: Date): string {
+  const iso = date.toISOString();
+  return `${iso.slice(0, 10)}-${iso.slice(11, 19).replace(/:/g, "")}`;
+}
+
+async function refresh(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
+  if (!env.ACTIONS_TOKEN) return jsonError("ACTIONS_TOKEN is not configured", 503);
+  const timestamp = utcTimestamp(new Date());
+  const headers = { Authorization: `Bearer ${env.ACTIONS_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "User-Agent": "data-workbench" };
+  const dispatched: { workflow: string; status: number }[] = [];
+  for (const workflow of SOURCE_WORKFLOWS) {
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/dispatches`, {
+      method: "POST", headers, body: JSON.stringify({ ref: "main", inputs: { snapshot_timestamp: timestamp } }),
+    });
+    if (!response.ok) return jsonError(`Unable to dispatch ${workflow} (${response.status})`, 502);
+    dispatched.push({ workflow, status: response.status });
+  }
+  return Response.json({ timestamp, workflows: dispatched }, { status: 202 });
+}
 
 async function isParquet(file: File): Promise<boolean> {
   if (file.size < 8) return false;
@@ -94,7 +125,9 @@ async function uploadBatch(request: Request, bucket: R2Bucket): Promise<Response
   const files = [...form.entries()].filter(([name, value]) => name === "file" && value instanceof File).map(([, value]) => value as File);
   if (!files.length) return jsonError("At least one Parquet file is required");
   if (files.some(file => file.size > MAX_UPLOAD_BYTES)) return jsonError("File exceeds upload limit", 413);
-  const timestamp = utcTimestamp(new Date());
+  const requestedTimestamp = request.headers.get("x-snapshot-timestamp");
+  const timestamp = requestedTimestamp ?? utcTimestamp(new Date());
+  if (!/^\d{4}-\d{2}-\d{2}-\d{6}$/.test(timestamp)) return jsonError("Invalid snapshot timestamp");
   const uploaded: { table: string; key: string; size: number }[] = [];
   for (const file of files) {
     const table = file.name.replace(/\.parquet$/i, "");
@@ -152,6 +185,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/api/health") return Response.json({ ok: true, service: "data-workbench" });
+    if (url.pathname === REFRESH_PATH) return refresh(request, env);
     if (url.pathname === OBJECTS_PATH) {
       if (request.method === "GET") return listObjects(env.DATA_BUCKET);
       if (request.method === "DELETE") return deleteObjects(request, env.DATA_BUCKET);
