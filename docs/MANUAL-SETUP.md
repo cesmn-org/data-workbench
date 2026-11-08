@@ -151,10 +151,6 @@ that capability, create a GitHub fine-grained personal access token:
 workflow-dispatch API. The token must not be placed in frontend code or a
 repository variable.
 
-The Worker-to-GitHub workflow-dispatch endpoint is not yet implemented. Until
-that feature is deployed, `ACTIONS_TOKEN` is stored for the future integration
-but is not used by the current application.
-
 ### 6. Deploy the repository
 
 Push the repository's `main` branch. GitHub Actions will build and deploy the
