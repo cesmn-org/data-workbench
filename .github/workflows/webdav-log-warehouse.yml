@@ -36,7 +36,7 @@ jobs:
         env:
           WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
           WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           SNAPSHOT_TIMESTAMP: ${{ inputs.snapshot_timestamp }}
@@ -56,7 +56,7 @@ jobs:
           username = os.environ["WEBDAV_USERNAME"]
           password = os.environ["WEBDAV_PASSWORD"]
 
-          account_id = os.environ["CLOUDFLARE_R2_ACCOUNT_ID"]
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
           access_key = os.environ["CLOUDFLARE_R2_ACCESS_KEY_ID"]
           secret_key = os.environ["CLOUDFLARE_R2_SECRET_ACCESS_KEY"]
 
@@ -65,7 +65,7 @@ jobs:
           required_values = {
               "WEBDAV_USERNAME": username,
               "WEBDAV_PASSWORD": password,
-              "CLOUDFLARE_R2_ACCOUNT_ID": account_id,
+              "CLOUDFLARE_ACCOUNT_ID": account_id,
               "CLOUDFLARE_R2_ACCESS_KEY_ID": access_key,
               "CLOUDFLARE_R2_SECRET_ACCESS_KEY": secret_key,
           }

@@ -39,7 +39,7 @@ jobs:
         env:
           CNC_USERNAME: ${{ secrets.CNC_USERNAME }}
           CNC_PASSWORD: ${{ secrets.CNC_PASSWORD }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           SNAPSHOT_TIMESTAMP: ${{ inputs.snapshot_timestamp }}
@@ -59,7 +59,7 @@ jobs:
           username = os.environ["CNC_USERNAME"]
           password = os.environ["CNC_PASSWORD"]
 
-          account_id = os.environ["CLOUDFLARE_R2_ACCOUNT_ID"]
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
           access_key = os.environ["CLOUDFLARE_R2_ACCESS_KEY_ID"]
           secret_key = os.environ["CLOUDFLARE_R2_SECRET_ACCESS_KEY"]
 
@@ -68,7 +68,7 @@ jobs:
           required_values = {
               "CNC_USERNAME": username,
               "CNC_PASSWORD": password,
-              "CLOUDFLARE_R2_ACCOUNT_ID": account_id,
+              "CLOUDFLARE_ACCOUNT_ID": account_id,
               "CLOUDFLARE_R2_ACCESS_KEY_ID": access_key,
               "CLOUDFLARE_R2_SECRET_ACCESS_KEY": secret_key,
           }
