@@ -10,6 +10,7 @@ interface Env {
 }
 
 const OBJECT_PREFIX = "/api/objects/";
+const OBJECTS_PATH = "/api/objects";
 const UPLOAD_PATH = "/api/uploads";
 const PLANS_PATH = "/api/plans";
 const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
@@ -44,6 +45,26 @@ function parseRange(value: string, size: number): { start: number; end: number }
   const requestedEnd = match[1] ? (match[2] ? Number(match[2]) : size - 1) : size - 1;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start > requestedEnd || start >= size) return null;
   return { start, end: Math.min(requestedEnd, size - 1) };
+}
+
+async function listObjects(bucket: R2Bucket): Promise<Response> {
+  const objects: { key: string; size: number; uploaded: string; etag?: string }[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ cursor, include: ["httpMetadata"] });
+    for (const object of page.objects) objects.push({ key: object.key, size: object.size, uploaded: object.uploaded.toISOString(), etag: object.etag });
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return Response.json({ objects });
+}
+
+async function deleteObjects(request: Request, bucket: R2Bucket): Promise<Response> {
+  const body = await request.json() as { keys?: unknown };
+  if (!Array.isArray(body.keys) || !body.keys.length || body.keys.length > 1000) return jsonError("keys must contain between 1 and 1000 object keys");
+  const keys = body.keys.filter((key): key is string => typeof key === "string");
+  if (keys.length !== body.keys.length || keys.some(key => !key || key.includes("..") || key.startsWith("/") || key.length > 1024)) return jsonError("Invalid object key");
+  await bucket.delete(keys);
+  return Response.json({ deleted: keys });
 }
 
 async function serveObject(request: Request, bucket: R2Bucket, key: string): Promise<Response> {
@@ -131,6 +152,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/api/health") return Response.json({ ok: true, service: "data-workbench" });
+    if (url.pathname === OBJECTS_PATH) {
+      if (request.method === "GET") return listObjects(env.DATA_BUCKET);
+      if (request.method === "DELETE") return deleteObjects(request, env.DATA_BUCKET);
+      return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, DELETE" } });
+    }
     if (url.pathname === UPLOAD_PATH) { if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } }); return uploadBatch(request, env.DATA_BUCKET); }
     if (url.pathname === PLANS_PATH) return plans(request, env);
     if (url.pathname.startsWith(`${PLANS_PATH}/`)) { const id = url.pathname.slice(`${PLANS_PATH}/`.length); if (!id || id.includes("/")) return jsonError("Invalid plan id"); return planById(request, env, id); }
