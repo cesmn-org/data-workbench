@@ -1,21 +1,10 @@
-import { Buffer } from 'buffer'
 import initJetDb, { Database as JetDatabase } from 'jetdb-wasm'
+import * as arrow from 'apache-arrow'
 import * as duckdb from '@duckdb/duckdb-wasm'
-;(globalThis as typeof globalThis & { Buffer: typeof Buffer }).Buffer = Buffer
-
 export type TableReport = { name: string; rows: number; columns: string[]; parquetBytes: Uint8Array }
 export type ProcessingReport = { tables: TableReport[]; metrics?: { foodServices: number; pounds: number; households: number; children: number; adults: number; seniors: number; fallbackHistoryMatches: number; defaultWeightServices: number } }
 type Row = Record<string, unknown>
 const REQUIRED_TABLES = ['tblClientService', 'tblClientService_History', 'tblClientService_History_Members', 'tblClientService_Food_Details'] as const
-
-function jsonSafe(value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString()
-  if (typeof value === 'bigint') return value.toString()
-  if (Buffer.isBuffer(value) || value instanceof Uint8Array) return Array.from(value as Uint8Array)
-  if (Array.isArray(value)) return value.map(jsonSafe)
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonSafe(item)]))
-  return value
-}
 
 async function createDuckDb() {
   const bundles = duckdb.getJsDelivrBundles(); const bundle = await duckdb.selectBundle({ mvp: bundles.mvp, eh: bundles.eh })
@@ -26,18 +15,32 @@ async function createDuckDb() {
 
 function sqlString(value: string) { return `'${value.replaceAll("'", "''")}'` }
 
-async function registerRows(db: duckdb.AsyncDuckDB, connection: duckdb.AsyncDuckDBConnection, name: string, rows: Row[]) {
-  const jsonName = `${name}.json`; await db.registerFileBuffer(jsonName, new TextEncoder().encode(JSON.stringify(rows.map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, jsonSafe(value)]))))))
-  await connection.query(`CREATE OR REPLACE TABLE ${name} AS SELECT * FROM read_json_auto(${sqlString(jsonName)}, format='array')`)
+function arrowTable(rows: Row[], columns: { name: string; type: string }[]) {
+  const vectors: Record<string, arrow.Vector> = {}
+  for (const column of columns) {
+    const values = rows.map(row => {
+      const value = row[column.name]
+      if (Array.isArray(value)) return JSON.stringify(value)
+      if (typeof value === 'bigint') return Number.isSafeInteger(Number(value)) ? Number(value) : value.toString()
+      return value == null ? null : typeof value === 'object' ? String(value) : value
+    })
+    const type = ['Byte', 'Int'].includes(column.type) ? new arrow.Int32() : ['Long', 'BigInt'].includes(column.type) ? new arrow.Int64() : column.type === 'Float' ? new arrow.Float32() : ['Double', 'Money', 'Numeric'].includes(column.type) ? new arrow.Float64() : ['Binary', 'OLE'].includes(column.type) ? new arrow.Binary() : new arrow.Utf8()
+    vectors[column.name] = arrow.vectorFromArray(values as never[], type)
+  }
+  return new arrow.Table(vectors)
+}
+
+async function registerRows(connection: duckdb.AsyncDuckDBConnection, name: string, rows: Row[], columns: { name: string; type: string }[]) {
+  await connection.insertArrowTable(arrowTable(rows, columns), { name })
 }
 
 async function transformCrmFoodServices(database: JetDatabase, onProgress: (message: string) => void): Promise<{ report: TableReport; metrics: NonNullable<ProcessingReport['metrics']> }> {
   onProgress('Reading CRM service tables with JetDB…')
-  const tables = Object.fromEntries(REQUIRED_TABLES.map(name => [name, database.rows(name).rows as Row[]])) as Record<string, Row[]>
+  const tables = Object.fromEntries(REQUIRED_TABLES.map(name => [name, { rows: database.rows(name).rows as Row[], columns: database.columns(name).map(column => ({ name: column.name, type: column.type })) }])) as Record<string, { rows: Row[]; columns: { name: string; type: string }[] }>
   const { db, connection } = await createDuckDb()
   try {
     onProgress('Loading CRM tables into DuckDB-Wasm…')
-    for (const [name, rows] of Object.entries(tables)) await registerRows(db, connection, `source_${name}`, rows)
+    for (const [name, table] of Object.entries(tables)) await registerRows(connection, `source_${name}`, table.rows, table.columns)
     const dateExpr = (column: string) => `COALESCE(TRY_CAST(${column} AS DATE), TRY_STRPTIME(${column}, '%m/%d/%Y')::DATE, TRY_STRPTIME(${column}, '%m/%d/%y')::DATE)`
     const sql = `
       CREATE OR REPLACE TABLE transformed AS
