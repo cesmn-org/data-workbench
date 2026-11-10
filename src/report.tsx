@@ -5,7 +5,14 @@ import type { R2ObjectInfo } from './types'
 type Metric = { program: string; households: number; children: number; adults: number; seniors: number; pounds: number }
 
 function asNumber(value: unknown) { const n = Number(value); return Number.isFinite(n) ? n : 0 }
-function asDate(value: unknown) { const text = String(value ?? '').slice(0, 10); return text }
+function asDate(value: unknown) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10)
+  const text = String(value ?? '').trim()
+  const iso = /^(\d{4}-\d{2}-\d{2})/.exec(text)
+  if (iso) return iso[1]
+  const parsed = new Date(text)
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10)
+}
 
 async function createDb() {
   const bundles = duckdb.getJsDelivrBundles(); const bundle = await duckdb.selectBundle({ mvp: bundles.mvp, eh: bundles.eh })
@@ -35,7 +42,7 @@ export function Reports({ objects, loading, onRefresh }: { objects: R2ObjectInfo
         await db.registerFileBuffer(object.key.replace(/[^A-Za-z0-9_]/g, '_'), new Uint8Array(await response.arrayBuffer()))
         const file = object.key.replace(/[^A-Za-z0-9_]/g, '_'); const result = rows(await connection.query(`SELECT * FROM read_parquet('${file}')`)); all.push(...result.map(row => ({ ...row, __key: object.key })))
       }
-      const inRange = (value: unknown) => { const d = asDate(value); return d >= start && d <= end }
+      const inRange = (value: unknown) => { const d = asDate(value); return Boolean(d) && d >= start && d <= end }
       const output: Metric[] = []; let rescuePounds = 0; let knownRows = 0
       for (const row of all) {
         const key = String(row.__key); const upper = key.toUpperCase()
