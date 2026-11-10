@@ -49,7 +49,7 @@ export function Reports({ objects, loading, onRefresh }: { objects: R2ObjectInfo
         if (isCrm) {
           const query = `SELECT service_type AS program, SUM(TRY_CAST(households_served AS DOUBLE)) AS households, SUM(TRY_CAST(children_served AS DOUBLE)) AS children, SUM(TRY_CAST(adults_served AS DOUBLE)) AS adults, SUM(TRY_CAST(seniors_served AS DOUBLE)) AS seniors, SUM(TRY_CAST(food_pounds AS DOUBLE)) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(service_date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)} GROUP BY service_type ORDER BY service_type`
           const rows = resultRows(await connection.query(query)); crmRows += rowCount
-          crmResults.push(...rows.map(row => ({ program: `CRM · ${String(row.program || 'Food')}`, households: number(row.households), children: number(row.children), adults: number(row.adults), seniors: number(row.seniors), pounds: number(row.pounds) })))
+          crmResults.push(...rows.map(row => { const serviceType = String(row.program || 'Food'); const program = serviceType === 'Food' || serviceType === 'Regular' ? 'Market' : serviceType; return { program: `CRM · ${program}`, households: number(row.households), children: number(row.children), adults: number(row.adults), seniors: number(row.seniors), pounds: number(row.pounds) } }))
         } else if (upper.includes('DISTRIBUTION')) {
           const row = resultRows(await connection.query(`SELECT SUM(TRY_CAST(TotalPounds AS DOUBLE)) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(Date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)}`))[0]
           crmResults.push({ program: 'Lockers', households: 0, children: 0, adults: 0, seniors: 0, pounds: number(row?.pounds) })
