@@ -8,8 +8,12 @@ type DatasetDiagnostic = { key: string; rows: number; columns: string[]; recogni
 function asNumber(value: unknown) { const n = Number(value); return Number.isFinite(n) ? n : 0 }
 function asDate(value: unknown) {
   if (value instanceof Date) return value.toISOString().slice(0, 10)
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const date = new Date(value > 10000 ? value * 86400000 : value)
+    return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10)
+  }
   const text = String(value ?? '').trim()
-  const iso = /^(\d{4}-\d{2}-\d{2})/.exec(text)
+  const iso = /(\d{4}-\d{2}-\d{2})/.exec(text)
   if (iso) return iso[1]
   const parsed = new Date(text)
   return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10)
