@@ -99,7 +99,11 @@ function githubHeaders(env: Env): HeadersInit {
 async function refresh(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
   if (!env.ACTIONS_TOKEN) return jsonError("ACTIONS_TOKEN is not configured", 503);
-  const timestamp = utcTimestamp(new Date()); const id = crypto.randomUUID(); const now = new Date().toISOString();
+  let requestedTimestamp: string | undefined;
+  try { requestedTimestamp = (await request.json() as { snapshot_timestamp?: unknown }).snapshot_timestamp as string | undefined } catch { /* empty body is valid */ }
+  const timestamp = requestedTimestamp ?? utcTimestamp(new Date());
+  if (!/^\d{4}-\d{2}-\d{2}-\d{6}$/.test(timestamp)) return jsonError("Invalid snapshot timestamp");
+  const id = crypto.randomUUID(); const now = new Date().toISOString();
   const workflows = SOURCE_WORKFLOWS.map(workflow => ({ workflow, status: "pending" }));
   try {
     await env.STATE_DB.prepare("INSERT INTO refresh_runs (id, snapshot_timestamp, current_index, status, workflows_json, created_at, updated_at) VALUES (?, ?, 0, 'queued', ?, ?, ?)").bind(id, timestamp, JSON.stringify(workflows), now, now).run();

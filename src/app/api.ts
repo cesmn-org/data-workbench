@@ -20,8 +20,8 @@ export async function uploadParquet(report: { tables: { name: string; parquetByt
   return json<UploadResult>(await fetch('/api/uploads', { method: 'POST', headers: snapshotTimestamp ? { 'x-snapshot-timestamp': snapshotTimestamp } : undefined, body: form }))
 }
 
-export async function startRefresh() {
-  return json<{ id: string; timestamp: string }>(await fetch('/api/refresh', { method: 'POST' }))
+export async function startRefresh(snapshotTimestamp: string) {
+  return json<{ id: string; timestamp: string }>(await fetch('/api/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ snapshot_timestamp: snapshotTimestamp }) }))
 }
 
 export async function refreshStatus(id: string) {
