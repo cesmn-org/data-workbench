@@ -21,6 +21,7 @@ function arrowTable(rows: Row[], columns: { name: string; type: string }[]) {
     const values = rows.map(row => {
       const value = row[column.name]
       if (Array.isArray(value)) return JSON.stringify(value)
+      if (['Long', 'BigInt'].includes(column.type)) return value == null ? null : BigInt(typeof value === 'bigint' ? value : String(value))
       if (typeof value === 'bigint') return Number.isSafeInteger(Number(value)) ? Number(value) : value.toString()
       return value == null ? null : typeof value === 'object' ? String(value) : value
     })
