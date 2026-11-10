@@ -43,16 +43,22 @@ export function Reports({ objects, loading, onRefresh }: { objects: R2ObjectInfo
         const file = object.key.replace(/[^A-Za-z0-9_]/g, '_'); const result = rows(await connection.query(`SELECT * FROM read_parquet('${file}')`)); all.push(...result.map(row => ({ ...row, __key: object.key })))
       }
       const inRange = (value: unknown) => { const d = asDate(value); return Boolean(d) && d >= start && d <= end }
-      const output: Metric[] = []; let rescuePounds = 0; let knownRows = 0
+      const output: Metric[] = []; let rescuePounds = 0; let knownRows = 0; let crmRowsRead = 0; let crmRowsInRange = 0
       for (const row of all) {
         const key = String(row.__key); const upper = key.toUpperCase()
-        if (upper.includes('CRM_FOOD_SERVICES')) { if (!inRange(row.service_date)) continue; knownRows++; output.push({ program: `CRM · ${String(row.service_type || 'Food')}`, households: asNumber(row.households_served), children: asNumber(row.children_served), adults: asNumber(row.adults_served), seniors: asNumber(row.seniors_served), pounds: asNumber(row.food_pounds) }); continue }
+        const isCrm = upper.includes('CRM_FOOD_SERVICES') || (upper.includes('CRM') && upper.includes('FOOD')) || ('service_id' in row && 'food_pounds' in row && 'service_date' in row)
+        if (isCrm) {
+          crmRowsRead++
+          if (!inRange(row.service_date)) continue
+          crmRowsInRange++; knownRows++
+          output.push({ program: `CRM · ${String(row.service_type || 'Food')}`, households: asNumber(row.households_served), children: asNumber(row.children_served), adults: asNumber(row.adults_served), seniors: asNumber(row.seniors_served), pounds: asNumber(row.food_pounds) }); continue
+        }
         if (upper.includes('DISTRIBUTION')) { if (!inRange(row.Date || row.date)) continue; output.push({ program: 'Lockers', households: 0, children: 0, adults: 0, seniors: 0, pounds: asNumber(row.TotalPounds ?? row.total_pounds) }); continue }
         if (upper.includes('ANONYMOUS')) { if (!inRange(row.Date || row.date)) continue; output.push({ program: `Anonymous · ${String(row.Program || 'Program')}`, households: asNumber(row.Households), children: asNumber(row.Children), adults: asNumber(row.Adults), seniors: asNumber(row.Seniors), pounds: asNumber(row.Pounds) }); continue }
         if (upper.includes('RESCUE')) { if (!inRange(row.Date || row.date)) continue; rescuePounds += asNumber(row.Total ?? row.total) }
       }
       const grouped = new Map<string, Metric>(); for (const item of output) { const current = grouped.get(item.program) ?? { ...item, households: 0, children: 0, adults: 0, seniors: 0, pounds: 0 }; current.households += item.households; current.children += item.children; current.adults += item.adults; current.seniors += item.seniors; current.pounds += item.pounds; grouped.set(item.program, current) }
-      setMetrics([...grouped.values()]); setRescue(rescuePounds); setKnown(knownRows); setNotice(`Report complete. Read ${all.length.toLocaleString()} rows.`); await connection.close(); await db.terminate()
+      setMetrics([...grouped.values()]); setRescue(rescuePounds); setKnown(knownRows); setNotice(`Report complete. Read ${all.length.toLocaleString()} rows; CRM rows ${crmRowsRead.toLocaleString()}, in range ${crmRowsInRange.toLocaleString()}.`); await connection.close(); await db.terminate()
     } catch (error) { setNotice(`Report failed: ${error instanceof Error ? error.message : String(error)}`) } finally { setRunning(false) }
   }
   const total = metrics.reduce((a, x) => ({ households: a.households + x.households, children: a.children + x.children, adults: a.adults + x.adults, seniors: a.seniors + x.seniors, pounds: a.pounds + x.pounds }), { households: 0, children: 0, adults: 0, seniors: 0, pounds: 0 })
