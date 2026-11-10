@@ -14,6 +14,7 @@
     "@duckdb/duckdb-wasm": "^1.33.1-dev57.0",
     "buffer": "^6.0.3",
     "events": "^3.3.0",
+    "jetdb-wasm": "^0.4.0",
     "mdb-reader": "^3.2.0",
     "process": "^0.11.10",
     "react": "^19.3.1",
