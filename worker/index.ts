@@ -186,6 +186,8 @@ async function uploadBatch(request: Request, bucket: R2Bucket): Promise<Response
   const files = [...form.entries()].filter(([name, value]) => name === "file" && value instanceof File).map(([, value]) => value as File);
   if (!files.length) return jsonError("At least one Parquet file is required");
   if (files.some(file => file.size > MAX_UPLOAD_BYTES)) return jsonError("File exceeds upload limit", 413);
+  const source = String(form.get("source") ?? "ACCESS").trim().toUpperCase();
+  if (!/^[A-Za-z0-9_]+$/.test(source)) return jsonError("Invalid source identifier");
   const requestedTimestamp = request.headers.get("x-snapshot-timestamp");
   const timestamp = requestedTimestamp ?? utcTimestamp(new Date());
   if (!/^\d{4}-\d{2}-\d{2}-\d{6}$/.test(timestamp)) return jsonError("Invalid snapshot timestamp");
@@ -194,7 +196,7 @@ async function uploadBatch(request: Request, bucket: R2Bucket): Promise<Response
     const table = file.name.replace(/\.parquet$/i, "");
     if (!table || !/^[A-Za-z0-9_]+$/.test(table) || !file.name.toLowerCase().endsWith(".parquet")) return jsonError(`Invalid table file: ${file.name}`);
     if (!(await isParquet(file))) return jsonError(`Invalid Parquet file: ${file.name}`);
-    const key = `ACCESS-${table}-${timestamp}.parquet`;
+    const key = `${source}-${table}-${timestamp}.parquet`;
     await bucket.put(key, file.stream(), { httpMetadata: { contentType: "application/vnd.apache.parquet" } });
     uploaded.push({ table, key, size: file.size });
   }

@@ -3,7 +3,7 @@ import { Buffer } from 'buffer'
 ;(globalThis as typeof globalThis & { Buffer: typeof Buffer; process?: unknown }).Buffer = Buffer
 ;(globalThis as typeof globalThis & { process?: unknown }).process = { browser: true, env: {}, versions: {}, nextTick: queueMicrotask } as any
 
-self.onmessage = async (event: MessageEvent<{ file: File; plan: { name?: string; tables: Record<string, { retainColumns: string[] }> }; inspect?: boolean }>) => {
+self.onmessage = async (event: MessageEvent<{ file: File; plan: { name?: string; tables: Record<string, { retainColumns: string[] }> }; inspect?: boolean; transformation?: 'crm-food-services' }>) => {
   try {
     const { inspectAccessFile, processAccessFile } = await import('./access-processing')
     if (event.data.inspect) {
@@ -11,7 +11,7 @@ self.onmessage = async (event: MessageEvent<{ file: File; plan: { name?: string;
       self.postMessage({ type: 'inspected', schemas })
       return
     }
-    const report = await processAccessFile(event.data.file, message => self.postMessage({ type: 'progress', message }), event.data.plan)
+    const report = await processAccessFile(event.data.file, message => self.postMessage({ type: 'progress', message }), event.data.plan, event.data.transformation)
     self.postMessage({ type: 'complete', report })
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
