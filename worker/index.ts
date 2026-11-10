@@ -10,17 +10,6 @@ interface Env {
   ACTIONS_TOKEN: string;
 }
 
-interface RefreshRun {
-  id: string;
-  timestamp: string;
-  status: string;
-  currentIndex: number;
-  currentWorkflow?: string;
-  currentRunId?: number;
-  workflows: { workflow: string; status?: string; runId?: number }[];
-  error?: string;
-}
-
 const OBJECT_PREFIX = "/api/objects/";
 const OBJECTS_PATH = "/api/objects";
 const UPLOAD_PATH = "/api/uploads";
@@ -118,7 +107,12 @@ async function refresh(request: Request, env: Env): Promise<Response> {
   if (!env.ACTIONS_TOKEN) return jsonError("ACTIONS_TOKEN is not configured", 503);
   const timestamp = utcTimestamp(new Date()); const id = crypto.randomUUID(); const now = new Date().toISOString();
   const workflows = SOURCE_WORKFLOWS.map(workflow => ({ workflow, status: "pending" }));
-  await env.PLANS_DB.prepare("INSERT INTO refresh_runs (id, snapshot_timestamp, current_index, status, workflows_json, created_at, updated_at) VALUES (?, ?, 0, 'queued', ?, ?, ?)").bind(id, timestamp, JSON.stringify(workflows), now, now).run();
+  try {
+    await env.PLANS_DB.prepare("INSERT INTO refresh_runs (id, snapshot_timestamp, current_index, status, workflows_json, created_at, updated_at) VALUES (?, ?, 0, 'queued', ?, ?, ?)").bind(id, timestamp, JSON.stringify(workflows), now, now).run();
+  } catch (error) {
+    if (String(error).toLowerCase().includes("unique")) return jsonError("Another source refresh is already running", 409);
+    throw error;
+  }
   return Response.json({ id, timestamp, status: "queued", workflows }, { status: 202 });
 }
 
@@ -136,19 +130,22 @@ async function refreshStatus(env: Env, id: string): Promise<Response> {
   const current = workflows[index];
   try {
     if (current.status === "pending") {
-      const dispatch = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/dispatches`, { method: "POST", headers, body: JSON.stringify({ ref: "main", inputs: { snapshot_timestamp: row.snapshot_timestamp } }) });
+      const dispatchStartedAt = new Date().toISOString();
+      const dispatch = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/dispatches`, { method: "POST", headers, body: JSON.stringify({ ref: "main", inputs: { snapshot_timestamp: row.snapshot_timestamp, refresh_id: id } }) });
       if (!dispatch.ok) throw new Error(`Unable to dispatch ${workflow} (${dispatch.status})`);
       workflows[index] = { workflow, status: "dispatching" };
-      await env.PLANS_DB.prepare("UPDATE refresh_runs SET status = 'running', workflows_json = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(workflows), new Date().toISOString(), id).run();
+      await env.PLANS_DB.prepare("UPDATE refresh_runs SET status = 'running', dispatch_started_at = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(dispatchStartedAt, JSON.stringify(workflows), new Date().toISOString(), id).run();
       return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
     }
 
     let runId = row.current_run_id as number | null;
     if (current.status === "dispatching") {
-      const runsResponse = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/runs?event=workflow_dispatch&branch=main&per_page=10`, { headers });
+      const runsResponse = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/runs?event=workflow_dispatch&branch=main&per_page=20`, { headers });
       if (!runsResponse.ok) throw new Error(`Unable to find run for ${workflow} (${runsResponse.status})`);
-      const runs = await runsResponse.json() as { workflow_runs: { id: number; created_at: string; status: string }[] };
-      const run = runs.workflow_runs.find(candidate => candidate.created_at >= String(row.created_at));
+      const runs = await runsResponse.json() as { workflow_runs: { id: number; created_at: string; status: string; display_title?: string; name?: string }[] };
+      const expectedTitle = `Data Workbench refresh ${id}`;
+      const dispatchStartedAt = String(row.dispatch_started_at ?? row.updated_at ?? row.created_at);
+      const run = runs.workflow_runs.find(candidate => candidate.display_title === expectedTitle && candidate.created_at >= dispatchStartedAt);
       if (!run) return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
       runId = run.id;
       workflows[index] = { workflow, status: "in_progress", runId };

@@ -1,11 +1,16 @@
 
 name: WebDAV LogAnonymousPrograms Fetcher
+run-name: Data Workbench refresh ${{ inputs.refresh_id || 'manual' }}
 
 on:
   workflow_dispatch:
     inputs:
       snapshot_timestamp:
         description: UTC snapshot timestamp (YYYY-MM-DD-HHMMSS)
+        required: false
+        type: string
+      refresh_id:
+        description: Data Workbench refresh run ID
         required: false
         type: string
 
