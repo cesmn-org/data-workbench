@@ -160,13 +160,8 @@ Worker automatically. The workflow can also be started manually from:
 Actions -> Deploy data-workbench Worker -> Run workflow
 ```
 
-The deployment workflow also creates the D1 database named:
-
-```text
-data-workbench-plans
-```
-
-if it does not already exist, applies the committed migration, and deploys the
+The deployment workflow also creates the D1 database used for refresh state
+if it does not already exist, applies the committed migrations, and deploys the
 Worker with its D1 and R2 bindings. No manual D1 database creation or migration
 is required.
 
@@ -221,7 +216,7 @@ Confirm that:
 2. An allowed user can authenticate.
 3. The Data Workbench application loads.
 4. The **R2 Files** screen lists objects after selecting **Refresh**.
-5. The **Processing Plans** screen can create a plan from an Access file.
+5. The **Data Operations** screen can transform an Access file locally.
 
 An unauthenticated request must not be able to use the application or API
 without passing the configured Access policy.

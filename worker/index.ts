@@ -1,19 +1,13 @@
-interface PlanTable {
-  name: string;
-  retainColumns: string[];
-}
-
 interface Env {
   ASSETS: Fetcher;
   DATA_BUCKET: R2Bucket;
-  PLANS_DB: D1Database;
+  STATE_DB: D1Database;
   ACTIONS_TOKEN: string;
 }
 
 const OBJECT_PREFIX = "/api/objects/";
 const OBJECTS_PATH = "/api/objects";
 const UPLOAD_PATH = "/api/uploads";
-const PLANS_PATH = "/api/plans";
 const REFRESH_PATH = "/api/refresh";
 const REFRESH_STATUS_PATH = "/api/refresh/status/";
 const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
@@ -108,7 +102,7 @@ async function refresh(request: Request, env: Env): Promise<Response> {
   const timestamp = utcTimestamp(new Date()); const id = crypto.randomUUID(); const now = new Date().toISOString();
   const workflows = SOURCE_WORKFLOWS.map(workflow => ({ workflow, status: "pending" }));
   try {
-    await env.PLANS_DB.prepare("INSERT INTO refresh_runs (id, snapshot_timestamp, current_index, status, workflows_json, created_at, updated_at) VALUES (?, ?, 0, 'queued', ?, ?, ?)").bind(id, timestamp, JSON.stringify(workflows), now, now).run();
+    await env.STATE_DB.prepare("INSERT INTO refresh_runs (id, snapshot_timestamp, current_index, status, workflows_json, created_at, updated_at) VALUES (?, ?, 0, 'queued', ?, ?, ?)").bind(id, timestamp, JSON.stringify(workflows), now, now).run();
   } catch (error) {
     if (String(error).toLowerCase().includes("unique")) return jsonError("Another source refresh is already running", 409);
     throw error;
@@ -117,7 +111,7 @@ async function refresh(request: Request, env: Env): Promise<Response> {
 }
 
 async function refreshStatus(env: Env, id: string): Promise<Response> {
-  const row = await env.PLANS_DB.prepare("SELECT * FROM refresh_runs WHERE id = ?").bind(id).first() as Record<string, unknown> | null;
+  const row = await env.STATE_DB.prepare("SELECT * FROM refresh_runs WHERE id = ?").bind(id).first() as Record<string, unknown> | null;
   if (!row) return jsonError("Refresh run not found", 404);
   const workflows = JSON.parse(String(row.workflows_json)) as { workflow: string; status: string; runId?: number }[];
   const index = Number(row.current_index);
@@ -134,7 +128,7 @@ async function refreshStatus(env: Env, id: string): Promise<Response> {
       const dispatch = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/dispatches`, { method: "POST", headers, body: JSON.stringify({ ref: "main", inputs: { snapshot_timestamp: row.snapshot_timestamp, refresh_id: id } }) });
       if (!dispatch.ok) throw new Error(`Unable to dispatch ${workflow} (${dispatch.status})`);
       workflows[index] = { workflow, status: "dispatching" };
-      await env.PLANS_DB.prepare("UPDATE refresh_runs SET status = 'running', dispatch_started_at = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(dispatchStartedAt, JSON.stringify(workflows), new Date().toISOString(), id).run();
+      await env.STATE_DB.prepare("UPDATE refresh_runs SET status = 'running', dispatch_started_at = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(dispatchStartedAt, JSON.stringify(workflows), new Date().toISOString(), id).run();
       return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
     }
 
@@ -149,7 +143,7 @@ async function refreshStatus(env: Env, id: string): Promise<Response> {
       if (!run) return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
       runId = run.id;
       workflows[index] = { workflow, status: "in_progress", runId };
-      await env.PLANS_DB.prepare("UPDATE refresh_runs SET current_run_id = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(runId, JSON.stringify(workflows), new Date().toISOString(), id).run();
+      await env.STATE_DB.prepare("UPDATE refresh_runs SET current_run_id = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(runId, JSON.stringify(workflows), new Date().toISOString(), id).run();
       return Response.json({ id, timestamp: row.snapshot_timestamp, status: "running", currentIndex: index, workflows, error: null });
     }
 
@@ -163,11 +157,11 @@ async function refreshStatus(env: Env, id: string): Promise<Response> {
     workflows[index] = { workflow, status: "success", runId };
     const nextIndex = index + 1;
     const status = nextIndex === SOURCE_WORKFLOWS.length ? "success" : "running";
-    await env.PLANS_DB.prepare("UPDATE refresh_runs SET current_index = ?, current_run_id = NULL, status = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(nextIndex, status, JSON.stringify(workflows), new Date().toISOString(), id).run();
+    await env.STATE_DB.prepare("UPDATE refresh_runs SET current_index = ?, current_run_id = NULL, status = ?, workflows_json = ?, updated_at = ? WHERE id = ?").bind(nextIndex, status, JSON.stringify(workflows), new Date().toISOString(), id).run();
     return Response.json({ id, timestamp: row.snapshot_timestamp, status, currentIndex: nextIndex, workflows, error: null });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await env.PLANS_DB.prepare("UPDATE refresh_runs SET status = 'failed', workflows_json = ?, updated_at = ?, error = ? WHERE id = ?").bind(JSON.stringify(workflows), new Date().toISOString(), message, id).run();
+    await env.STATE_DB.prepare("UPDATE refresh_runs SET status = 'failed', workflows_json = ?, updated_at = ?, error = ? WHERE id = ?").bind(JSON.stringify(workflows), new Date().toISOString(), message, id).run();
     return Response.json({ id, timestamp: row.snapshot_timestamp, status: "failed", currentIndex: index, workflows, error: message }, { status: 502 });
   }
 }
@@ -200,47 +194,6 @@ async function uploadBatch(request: Request, bucket: R2Bucket): Promise<Response
   return Response.json({ timestamp, objects: uploaded }, { status: 201 });
 }
 
-function parsePlan(row: Record<string, unknown>) {
-  return { id: row.id, name: row.name, isDefault: Boolean(row.is_default), tables: JSON.parse(String(row.tables_json)) as PlanTable[], createdAt: row.created_at, updatedAt: row.updated_at };
-}
-
-async function plans(request: Request, env: Env): Promise<Response> {
-  if (request.method === "GET") {
-    const { results } = await env.PLANS_DB.prepare("SELECT * FROM plans ORDER BY is_default DESC, name").all();
-    return Response.json(results.map(row => parsePlan(row as Record<string, unknown>)));
-  }
-  if (request.method !== "POST") return jsonError("Method Not Allowed", 405);
-  const body = await request.json() as { name?: string; tables?: PlanTable[] };
-  const name = body.name?.trim();
-  if (!name || !Array.isArray(body.tables) || !body.tables.length) return jsonError("name and tables are required");
-  if (body.tables.some(table => !table.name || !Array.isArray(table.retainColumns) || !table.retainColumns.length)) return jsonError("Invalid table selection");
-  const now = new Date().toISOString();
-  const id = crypto.randomUUID();
-  try {
-    await env.PLANS_DB.prepare("INSERT INTO plans (id,name,is_default,tables_json,created_at,updated_at) VALUES (?, ?, 0, ?, ?, ?)").bind(id, name, JSON.stringify(body.tables), now, now).run();
-  } catch { return jsonError("A plan with that name already exists", 409); }
-  return Response.json({ id, name, isDefault: false, tables: body.tables, createdAt: now, updatedAt: now }, { status: 201 });
-}
-
-async function planById(request: Request, env: Env, id: string): Promise<Response> {
-  const existing = await env.PLANS_DB.prepare("SELECT * FROM plans WHERE id = ?").bind(id).first();
-  if (!existing) return jsonError("Plan not found", 404);
-  if (request.method === "DELETE") { await env.PLANS_DB.prepare("DELETE FROM plans WHERE id = ?").bind(id).run(); return new Response(null, { status: 204 }); }
-  if (request.method === "PUT") {
-    const body = await request.json() as { name?: string; tables?: PlanTable[] };
-    const name = body.name?.trim();
-    if (!name || !Array.isArray(body.tables) || !body.tables.length || body.tables.some(table => !table.name || !Array.isArray(table.retainColumns) || !table.retainColumns.length)) return jsonError("name and tables are required");
-    const now = new Date().toISOString();
-    await env.PLANS_DB.prepare("UPDATE plans SET name = ?, tables_json = ?, updated_at = ? WHERE id = ?").bind(name, JSON.stringify(body.tables), now, id).run();
-    const updated = await env.PLANS_DB.prepare("SELECT * FROM plans WHERE id = ?").bind(id).first() as Record<string, unknown>;
-    return Response.json(parsePlan(updated));
-  }
-  if (request.method !== "POST") return jsonError("Method Not Allowed", 405);
-  await env.PLANS_DB.prepare("UPDATE plans SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END, updated_at = ?").bind(id, new Date().toISOString()).run();
-  const updated = await env.PLANS_DB.prepare("SELECT * FROM plans WHERE id = ?").bind(id).first() as Record<string, unknown>;
-  return Response.json(parsePlan(updated));
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -253,8 +206,6 @@ export default {
       return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, DELETE" } });
     }
     if (url.pathname === UPLOAD_PATH) { if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } }); return uploadBatch(request, env.DATA_BUCKET); }
-    if (url.pathname === PLANS_PATH) return plans(request, env);
-    if (url.pathname.startsWith(`${PLANS_PATH}/`)) { const id = url.pathname.slice(`${PLANS_PATH}/`.length); if (!id || id.includes("/")) return jsonError("Invalid plan id"); return planById(request, env, id); }
     if (url.pathname.startsWith(OBJECT_PREFIX)) { if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, HEAD" } }); const key = objectKeyFromRequest(url); if (!key) return jsonError("Invalid object key"); if (!isAllowedObjectKey(key)) return new Response("Not found", { status: 404 }); return serveObject(request, env.DATA_BUCKET, key); }
     return env.ASSETS.fetch(request);
   },

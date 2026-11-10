@@ -17,7 +17,7 @@
   ],
   "d1_databases": [
     {
-      "binding": "PLANS_DB",
+      "binding": "STATE_DB",
       "database_name": "data-workbench-plans",
       "database_id": "REPLACE_WITH_D1_DATABASE_ID"
     }

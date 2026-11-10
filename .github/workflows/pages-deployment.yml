@@ -48,7 +48,7 @@ jobs:
           ' )"
           if [ -z "$database_id" ]; then
             echo "Creating D1 database $D1_DATABASE_NAME."
-            create_output="$(npx wrangler d1 create "$D1_DATABASE_NAME" --binding=PLANS_DB 2>&1)"
+            create_output="$(npx wrangler d1 create "$D1_DATABASE_NAME" --binding=STATE_DB 2>&1)"
             database_id="$(printf '%s' "$create_output" | node -e '
               let input = "";
               process.stdin.on("data", chunk => input += chunk);
