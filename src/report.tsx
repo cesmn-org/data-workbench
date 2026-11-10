@@ -47,17 +47,17 @@ export function Reports({ objects, loading, onRefresh }: { objects: R2ObjectInfo
         const rowCount = number(resultRows(await connection.query(`SELECT COUNT(*) AS count FROM read_parquet(${file})`))[0]?.count)
         setDiagnostics(current => [...current, { key: object.key, rows: rowCount, columns, recognized, dateColumn }])
         if (isCrm) {
-          const query = `SELECT service_type AS program, SUM(households_served) AS households, SUM(children_served) AS children, SUM(adults_served) AS adults, SUM(seniors_served) AS seniors, SUM(food_pounds) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(service_date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)} GROUP BY service_type ORDER BY service_type`
+          const query = `SELECT service_type AS program, SUM(TRY_CAST(households_served AS DOUBLE)) AS households, SUM(TRY_CAST(children_served AS DOUBLE)) AS children, SUM(TRY_CAST(adults_served AS DOUBLE)) AS adults, SUM(TRY_CAST(seniors_served AS DOUBLE)) AS seniors, SUM(TRY_CAST(food_pounds AS DOUBLE)) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(service_date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)} GROUP BY service_type ORDER BY service_type`
           const rows = resultRows(await connection.query(query)); crmRows += rowCount
           crmResults.push(...rows.map(row => ({ program: `CRM · ${String(row.program || 'Food')}`, households: number(row.households), children: number(row.children), adults: number(row.adults), seniors: number(row.seniors), pounds: number(row.pounds) })))
         } else if (upper.includes('DISTRIBUTION')) {
-          const row = resultRows(await connection.query(`SELECT SUM(TotalPounds) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(Date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)}`))[0]
+          const row = resultRows(await connection.query(`SELECT SUM(TRY_CAST(TotalPounds AS DOUBLE)) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(Date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)}`))[0]
           crmResults.push({ program: 'Lockers', households: 0, children: 0, adults: 0, seniors: 0, pounds: number(row?.pounds) })
         } else if (upper.includes('ANONYMOUS')) {
-          const rows = resultRows(await connection.query(`SELECT Program AS program, SUM(Households) AS households, SUM(Children) AS children, SUM(Adults) AS adults, SUM(Seniors) AS seniors, SUM(Pounds) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(Date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)} GROUP BY Program ORDER BY Program`))
+          const rows = resultRows(await connection.query(`SELECT Program AS program, SUM(TRY_CAST(Households AS DOUBLE)) AS households, SUM(TRY_CAST(Children AS DOUBLE)) AS children, SUM(TRY_CAST(Adults AS DOUBLE)) AS adults, SUM(TRY_CAST(Seniors AS DOUBLE)) AS seniors, SUM(TRY_CAST(Pounds AS DOUBLE)) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(Date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)} GROUP BY Program ORDER BY Program`))
           crmResults.push(...rows.map(row => ({ program: `Anonymous · ${String(row.program || 'Program')}`, households: number(row.households), children: number(row.children), adults: number(row.adults), seniors: number(row.seniors), pounds: number(row.pounds) })))
         } else if (upper.includes('RESCUE')) {
-          const row = resultRows(await connection.query(`SELECT SUM(Total) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(Date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)}`))[0]
+          const row = resultRows(await connection.query(`SELECT SUM(TRY_CAST(Total AS DOUBLE)) AS pounds FROM read_parquet(${file}) WHERE TRY_CAST(Date AS DATE) BETWEEN DATE ${sqlString(from)} AND DATE ${sqlString(through)}`))[0]
           rescuePounds += number(row?.pounds)
         }
       }
